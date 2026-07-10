@@ -21,15 +21,15 @@ const { useState, useEffect, useMemo, useCallback } = React;
 /* ============================================================
    シードデータ(過去の対戦表 + ChatGPT分析より)
    ============================================================ */
-const SEED_PLAYERS = JSON.parse(`{"ino": {"games": 215, "wins": 117, "losses": 98, "isAI": false}, "iselo2sei": {"games": 184, "wins": 84, "losses": 100, "isAI": false}, "ke_ppy": {"games": 167, "wins": 88, "losses": 79, "isAI": false}, "junpei": {"games": 218, "wins": 139, "losses": 79, "isAI": false}, "AI1": {"games": 121, "wins": 105, "losses": 16, "isAI": true}, "AI2": {"games": 104, "wins": 68, "losses": 36, "isAI": true}, "AI3": {"games": 90, "wins": 12, "losses": 78, "isAI": true}, "AI4": {"games": 53, "wins": 0, "losses": 53, "isAI": true}, "iwsk": {"games": 48, "wins": 25, "losses": 23, "isAI": false}, "haru-s": {"games": 61, "wins": 17, "losses": 44, "isAI": false}, "AI5": {"games": 31, "wins": 0, "losses": 31, "isAI": true}, "stone": {"games": 23, "wins": 6, "losses": 17, "isAI": false}, "s-kim": {"games": 1, "wins": 0, "losses": 1, "isAI": false}, "t_toni_": {"games": 1, "wins": 0, "losses": 1, "isAI": false}, "ishi_sawada": {"games": 19, "wins": 12, "losses": 7, "isAI": false}, "MJ": {"games": 43, "wins": 17, "losses": 26, "isAI": false}, "urio0042": {"games": 5, "wins": 3, "losses": 2, "isAI": false}, "max": {"games": 20, "wins": 8, "losses": 12, "isAI": false}}`);
+const SEED_PLAYERS = JSON.parse(`{"ino": {"games": 215, "wins": 117, "losses": 98, "isAI": false}, "iselo2sei": {"games": 184, "wins": 84, "losses": 100, "isAI": false}, "ke_ppy": {"games": 167, "wins": 88, "losses": 79, "isAI": false}, "junpei": {"games": 218, "wins": 139, "losses": 79, "isAI": false}, "AI1": {"games": 121, "wins": 105, "losses": 16, "isAI": true}, "AI2": {"games": 104, "wins": 68, "losses": 36, "isAI": true}, "AI3": {"games": 90, "wins": 12, "losses": 78, "isAI": true}, "AI4": {"games": 53, "wins": 0, "losses": 53, "isAI": true}, "iwsk": {"games": 48, "wins": 25, "losses": 23, "isAI": false}, "haru-s": {"games": 61, "wins": 17, "losses": 44, "isAI": false}, "AI5": {"games": 31, "wins": 0, "losses": 31, "isAI": true}, "stone": {"games": 23, "wins": 6, "losses": 17, "isAI": false}, "s-kim": {"games": 1, "wins": 0, "losses": 1, "isAI": false}, "t_toni_": {"games": 1, "wins": 0, "losses": 1, "isAI": false}, "ishi_sawada": {"games": 19, "wins": 12, "losses": 7, "isAI": false}, "MJHotcake": {"games": 43, "wins": 17, "losses": 26, "isAI": false}, "urio0042": {"games": 5, "wins": 3, "losses": 2, "isAI": false}, "max": {"games": 20, "wins": 8, "losses": 12, "isAI": false}}`);
 
 // 手動で記録された実試合(スコア明細つき)。今後もここに追記、または UI の「試合を記録」から追加していく。
 const SEED_MATCHES = [
   {
     id: "seed-1",
-    date: "",
+    date: "2026/07/04",
     map: "",
-    teamA: ["iselo2sei", "junpei", "ishi_sawada", "MJ"],
+    teamA: ["iselo2sei", "junpei", "ishi_sawada", "MJHotcake"],
     teamB: ["ino", "ke_ppy", "haru-s", "urio0042"],
     winner: "A",
     notes: "スコアボード画像より記録。",
@@ -37,7 +37,7 @@ const SEED_MATCHES = [
       iselo2sei: { military: 715, economy: 5277, tech: 2738, society: 390 },
       junpei: { military: 3722, economy: 6876, tech: 3816, society: 260 },
       ishi_sawada: { military: 104, economy: 3630, tech: 1587, society: 0 },
-      MJ: { military: 1192, economy: 5547, tech: 3019, society: 520 },
+      MJHotcake: { military: 1192, economy: 5547, tech: 3019, society: 520 },
       ino: { military: 2113, economy: 2031, tech: 2033, society: 208 },
       ke_ppy: { military: 1275, economy: 3895, tech: 3320, society: 260 },
       "haru-s": { military: 1092, economy: 1439, tech: 1009, society: 0 },
@@ -48,17 +48,17 @@ const SEED_MATCHES = [
 
 // ChatGPTとの分析で出た「直近の相対評価」(0-100スケール)。既知プレイヤーのEloの初期値算出に使用。
 const CHATGPT_RATING = {
-  junpei: 100, ke_ppy: 93, ino: 91, iselo2sei: 87, MJ: 84,
+  junpei: 100, ke_ppy: 93, ino: 91, iselo2sei: 87, MJHotcake: 84,
   urio0042: 74, ishi_sawada: 72, "haru-s": 70,
 };
 
 let SEED_TEAMMATE = {};
 let SEED_H2H = {};
 try {
-  SEED_TEAMMATE = JSON.parse(`{"ino|junpei": {"games": 57, "wins": 47}, "iselo2sei|ke_ppy": {"games": 49, "wins": 23}, "ino|ke_ppy": {"games": 75, "wins": 43}, "AI3|ino": {"games": 28, "wins": 1}, "AI4|ino": {"games": 22, "wins": 0}, "iselo2sei|junpei": {"games": 72, "wins": 46}, "AI1|iselo2sei": {"games": 46, "wins": 40}, "AI2|iselo2sei": {"games": 34, "wins": 22}, "AI3|ke_ppy": {"games": 17, "wins": 0}, "AI4|ke_ppy": {"games": 9, "wins": 0}, "AI1|junpei": {"games": 66, "wins": 59}, "AI2|junpei": {"games": 56, "wins": 39}, "AI1|AI2": {"games": 71, "wins": 68}, "AI3|AI4": {"games": 42, "wins": 0}, "AI1|ino": {"games": 61, "wins": 57}, "AI2|ino": {"games": 48, "wins": 35}, "AI3|iselo2sei": {"games": 26, "wins": 1}, "AI4|iselo2sei": {"games": 23, "wins": 0}, "AI1|ke_ppy": {"games": 36, "wins": 32}, "AI2|ke_ppy": {"games": 24, "wins": 16}, "AI3|junpei": {"games": 46, "wins": 10}, "AI4|junpei": {"games": 20, "wins": 0}, "iwsk|ke_ppy": {"games": 20, "wins": 10}, "iwsk|junpei": {"games": 11, "wins": 10}, "ino|iwsk": {"games": 22, "wins": 13}, "junpei|ke_ppy": {"games": 53, "wins": 40}, "ino|iselo2sei": {"games": 71, "wins": 34}, "AI2|AI3": {"games": 34, "wins": 12}, "haru-s|ino": {"games": 19, "wins": 3}, "AI3|haru-s": {"games": 10, "wins": 0}, "AI4|haru-s": {"games": 4, "wins": 0}, "AI5|haru-s": {"games": 1, "wins": 0}, "AI3|AI5": {"games": 20, "wins": 0}, "AI4|AI5": {"games": 31, "wins": 0}, "haru-s|junpei": {"games": 40, "wins": 16}, "ino|max": {"games": 11, "wins": 5}, "iselo2sei|max": {"games": 9, "wins": 5}, "AI3|max": {"games": 4, "wins": 0}, "AI1|max": {"games": 4, "wins": 1}, "iwsk|max": {"games": 5, "wins": 2}, "AI2|iwsk": {"games": 3, "wins": 1}, "AI2|max": {"games": 3, "wins": 1}, "ke_ppy|max": {"games": 6, "wins": 2}, "AI1|AI3": {"games": 15, "wins": 12}, "ino|stone": {"games": 9, "wins": 3}, "ino|s-kim": {"games": 1, "wins": 0}, "haru-s|iselo2sei": {"games": 15, "wins": 7}, "ke_ppy|stone": {"games": 10, "wins": 1}, "ke_ppy|s-kim": {"games": 1, "wins": 0}, "haru-s|max": {"games": 3, "wins": 1}, "junpei|max": {"games": 8, "wins": 5}, "s-kim|stone": {"games": 1, "wins": 0}, "haru-s|stone": {"games": 3, "wins": 0}, "haru-s|t_toni_": {"games": 1, "wins": 0}, "junpei|stone": {"games": 9, "wins": 4}, "junpei|t_toni_": {"games": 1, "wins": 0}, "stone|t_toni_": {"games": 1, "wins": 0}, "iselo2sei|ishi_sawada": {"games": 15, "wins": 11}, "iselo2sei|stone": {"games": 4, "wins": 2}, "ishi_sawada|junpei": {"games": 9, "wins": 6}, "ishi_sawada|stone": {"games": 1, "wins": 1}, "ishi_sawada|max": {"games": 1, "wins": 1}, "AI1|stone": {"games": 4, "wins": 2}, "AI1|haru-s": {"games": 8, "wins": 6}, "AI2|haru-s": {"games": 10, "wins": 2}, "max|stone": {"games": 1, "wins": 0}, "AI3|stone": {"games": 8, "wins": 0}, "haru-s|ke_ppy": {"games": 22, "wins": 9}, "AI2|stone": {"games": 1, "wins": 1}, "haru-s|iwsk": {"games": 8, "wins": 0}, "iwsk|stone": {"games": 4, "wins": 2}, "iselo2sei|iwsk": {"games": 17, "wins": 11}, "AI1|iwsk": {"games": 6, "wins": 4}, "AI4|stone": {"games": 6, "wins": 0}, "AI5|stone": {"games": 1, "wins": 0}, "AI5|junpei": {"games": 9, "wins": 0}, "AI5|iselo2sei": {"games": 14, "wins": 0}, "AI5|ino": {"games": 16, "wins": 0}, "AI3|ishi_sawada": {"games": 1, "wins": 0}, "AI5|ke_ppy": {"games": 1, "wins": 0}, "MJ|junpei": {"games": 21, "wins": 10}, "AI3|iwsk": {"games": 1, "wins": 0}, "MJ|ino": {"games": 26, "wins": 11}, "MJ|ke_ppy": {"games": 16, "wins": 8}, "MJ|haru-s": {"games": 18, "wins": 3}, "ishi_sawada|iwsk": {"games": 10, "wins": 6}, "ishi_sawada|ke_ppy": {"games": 10, "wins": 7}, "MJ|iwsk": {"games": 6, "wins": 0}, "haru-s|ishi_sawada": {"games": 2, "wins": 0}, "MJ|ishi_sawada": {"games": 4, "wins": 1}, "ino|ishi_sawada": {"games": 4, "wins": 3}, "MJ|iselo2sei": {"games": 11, "wins": 5}, "ino|urio0042": {"games": 4, "wins": 3}, "ke_ppy|urio0042": {"games": 4, "wins": 3}, "MJ|urio0042": {"games": 4, "wins": 3}, "AI1|MJ": {"games": 6, "wins": 5}, "AI2|MJ": {"games": 4, "wins": 0}, "MJ|max": {"games": 2, "wins": 1}, "haru-s|urio0042": {"games": 2, "wins": 0}, "junpei|urio0042": {"games": 1, "wins": 0}}`);
+  SEED_TEAMMATE = JSON.parse(`{"ino|junpei": {"games": 57, "wins": 47}, "iselo2sei|ke_ppy": {"games": 49, "wins": 23}, "ino|ke_ppy": {"games": 75, "wins": 43}, "AI3|ino": {"games": 28, "wins": 1}, "AI4|ino": {"games": 22, "wins": 0}, "iselo2sei|junpei": {"games": 72, "wins": 46}, "AI1|iselo2sei": {"games": 46, "wins": 40}, "AI2|iselo2sei": {"games": 34, "wins": 22}, "AI3|ke_ppy": {"games": 17, "wins": 0}, "AI4|ke_ppy": {"games": 9, "wins": 0}, "AI1|junpei": {"games": 66, "wins": 59}, "AI2|junpei": {"games": 56, "wins": 39}, "AI1|AI2": {"games": 71, "wins": 68}, "AI3|AI4": {"games": 42, "wins": 0}, "AI1|ino": {"games": 61, "wins": 57}, "AI2|ino": {"games": 48, "wins": 35}, "AI3|iselo2sei": {"games": 26, "wins": 1}, "AI4|iselo2sei": {"games": 23, "wins": 0}, "AI1|ke_ppy": {"games": 36, "wins": 32}, "AI2|ke_ppy": {"games": 24, "wins": 16}, "AI3|junpei": {"games": 46, "wins": 10}, "AI4|junpei": {"games": 20, "wins": 0}, "iwsk|ke_ppy": {"games": 20, "wins": 10}, "iwsk|junpei": {"games": 11, "wins": 10}, "ino|iwsk": {"games": 22, "wins": 13}, "junpei|ke_ppy": {"games": 53, "wins": 40}, "ino|iselo2sei": {"games": 71, "wins": 34}, "AI2|AI3": {"games": 34, "wins": 12}, "haru-s|ino": {"games": 19, "wins": 3}, "AI3|haru-s": {"games": 10, "wins": 0}, "AI4|haru-s": {"games": 4, "wins": 0}, "AI5|haru-s": {"games": 1, "wins": 0}, "AI3|AI5": {"games": 20, "wins": 0}, "AI4|AI5": {"games": 31, "wins": 0}, "haru-s|junpei": {"games": 40, "wins": 16}, "ino|max": {"games": 11, "wins": 5}, "iselo2sei|max": {"games": 9, "wins": 5}, "AI3|max": {"games": 4, "wins": 0}, "AI1|max": {"games": 4, "wins": 1}, "iwsk|max": {"games": 5, "wins": 2}, "AI2|iwsk": {"games": 3, "wins": 1}, "AI2|max": {"games": 3, "wins": 1}, "ke_ppy|max": {"games": 6, "wins": 2}, "AI1|AI3": {"games": 15, "wins": 12}, "ino|stone": {"games": 9, "wins": 3}, "ino|s-kim": {"games": 1, "wins": 0}, "haru-s|iselo2sei": {"games": 15, "wins": 7}, "ke_ppy|stone": {"games": 10, "wins": 1}, "ke_ppy|s-kim": {"games": 1, "wins": 0}, "haru-s|max": {"games": 3, "wins": 1}, "junpei|max": {"games": 8, "wins": 5}, "s-kim|stone": {"games": 1, "wins": 0}, "haru-s|stone": {"games": 3, "wins": 0}, "haru-s|t_toni_": {"games": 1, "wins": 0}, "junpei|stone": {"games": 9, "wins": 4}, "junpei|t_toni_": {"games": 1, "wins": 0}, "stone|t_toni_": {"games": 1, "wins": 0}, "iselo2sei|ishi_sawada": {"games": 15, "wins": 11}, "iselo2sei|stone": {"games": 4, "wins": 2}, "ishi_sawada|junpei": {"games": 9, "wins": 6}, "ishi_sawada|stone": {"games": 1, "wins": 1}, "ishi_sawada|max": {"games": 1, "wins": 1}, "AI1|stone": {"games": 4, "wins": 2}, "AI1|haru-s": {"games": 8, "wins": 6}, "AI2|haru-s": {"games": 10, "wins": 2}, "max|stone": {"games": 1, "wins": 0}, "AI3|stone": {"games": 8, "wins": 0}, "haru-s|ke_ppy": {"games": 22, "wins": 9}, "AI2|stone": {"games": 1, "wins": 1}, "haru-s|iwsk": {"games": 8, "wins": 0}, "iwsk|stone": {"games": 4, "wins": 2}, "iselo2sei|iwsk": {"games": 17, "wins": 11}, "AI1|iwsk": {"games": 6, "wins": 4}, "AI4|stone": {"games": 6, "wins": 0}, "AI5|stone": {"games": 1, "wins": 0}, "AI5|junpei": {"games": 9, "wins": 0}, "AI5|iselo2sei": {"games": 14, "wins": 0}, "AI5|ino": {"games": 16, "wins": 0}, "AI3|ishi_sawada": {"games": 1, "wins": 0}, "AI5|ke_ppy": {"games": 1, "wins": 0}, "MJHotcake|junpei": {"games": 21, "wins": 10}, "AI3|iwsk": {"games": 1, "wins": 0}, "MJHotcake|ino": {"games": 26, "wins": 11}, "MJHotcake|ke_ppy": {"games": 16, "wins": 8}, "MJHotcake|haru-s": {"games": 18, "wins": 3}, "ishi_sawada|iwsk": {"games": 10, "wins": 6}, "ishi_sawada|ke_ppy": {"games": 10, "wins": 7}, "MJHotcake|iwsk": {"games": 6, "wins": 0}, "haru-s|ishi_sawada": {"games": 2, "wins": 0}, "MJHotcake|ishi_sawada": {"games": 4, "wins": 1}, "ino|ishi_sawada": {"games": 4, "wins": 3}, "MJHotcake|iselo2sei": {"games": 11, "wins": 5}, "ino|urio0042": {"games": 4, "wins": 3}, "ke_ppy|urio0042": {"games": 4, "wins": 3}, "MJHotcake|urio0042": {"games": 4, "wins": 3}, "AI1|MJHotcake": {"games": 6, "wins": 5}, "AI2|MJHotcake": {"games": 4, "wins": 0}, "MJHotcake|max": {"games": 2, "wins": 1}, "haru-s|urio0042": {"games": 2, "wins": 0}, "junpei|urio0042": {"games": 1, "wins": 0}}`);
 } catch (e) { SEED_TEAMMATE = {}; }
 try {
-  SEED_H2H = JSON.parse(`{"ino|iselo2sei": {"games": 108, "aWins": 61}, "ino|ke_ppy": {"games": 89, "aWins": 46}, "iselo2sei|junpei": {"games": 110, "aWins": 37}, "junpei|ke_ppy": {"games": 113, "aWins": 65}, "ino|junpei": {"games": 156, "aWins": 68}, "AI1|ino": {"games": 56, "aWins": 45}, "AI2|ino": {"games": 53, "aWins": 31}, "iselo2sei|ke_ppy": {"games": 88, "aWins": 40}, "AI3|iselo2sei": {"games": 43, "aWins": 11}, "AI4|iselo2sei": {"games": 18, "aWins": 0}, "AI1|ke_ppy": {"games": 35, "aWins": 26}, "AI2|ke_ppy": {"games": 34, "aWins": 15}, "AI3|junpei": {"games": 42, "aWins": 2}, "AI4|junpei": {"games": 32, "aWins": 0}, "AI1|AI3": {"games": 75, "aWins": 75}, "AI1|AI4": {"games": 53, "aWins": 53}, "AI2|AI3": {"games": 56, "aWins": 56}, "AI2|AI4": {"games": 53, "aWins": 53}, "AI3|ino": {"games": 60, "aWins": 11}, "AI4|ino": {"games": 30, "aWins": 0}, "AI1|iselo2sei": {"games": 50, "aWins": 44}, "AI2|iselo2sei": {"games": 48, "aWins": 30}, "AI3|ke_ppy": {"games": 29, "aWins": 1}, "AI4|ke_ppy": {"games": 12, "aWins": 0}, "AI1|junpei": {"games": 53, "aWins": 44}, "AI2|junpei": {"games": 46, "aWins": 28}, "ino|iwsk": {"games": 23, "aWins": 12}, "iwsk|junpei": {"games": 37, "aWins": 15}, "iwsk|ke_ppy": {"games": 24, "aWins": 14}, "AI1|AI2": {"games": 33, "aWins": 33}, "haru-s|junpei": {"games": 21, "aWins": 1}, "AI1|haru-s": {"games": 18, "aWins": 17}, "AI2|haru-s": {"games": 11, "aWins": 7}, "haru-s|ino": {"games": 41, "aWins": 14}, "AI5|ino": {"games": 15, "aWins": 0}, "AI5|junpei": {"games": 22, "aWins": 0}, "AI1|AI5": {"games": 31, "aWins": 31}, "AI2|AI5": {"games": 31, "aWins": 31}, "haru-s|ke_ppy": {"games": 35, "aWins": 7}, "ke_ppy|max": {"games": 12, "aWins": 6}, "junpei|max": {"games": 12, "aWins": 9}, "AI1|max": {"games": 9, "aWins": 6}, "AI2|max": {"games": 5, "aWins": 4}, "iselo2sei|iwsk": {"games": 23, "aWins": 14}, "iwsk|max": {"games": 4, "aWins": 2}, "AI1|iwsk": {"games": 6, "aWins": 3}, "iselo2sei|max": {"games": 7, "aWins": 5}, "AI3|max": {"games": 3, "aWins": 1}, "ino|max": {"games": 7, "aWins": 4}, "iselo2sei|stone": {"games": 9, "aWins": 7}, "iselo2sei|s-kim": {"games": 1, "aWins": 1}, "haru-s|stone": {"games": 4, "aWins": 3}, "haru-s|s-kim": {"games": 1, "aWins": 1}, "junpei|stone": {"games": 14, "aWins": 12}, "junpei|s-kim": {"games": 1, "aWins": 1}, "max|stone": {"games": 8, "aWins": 4}, "max|s-kim": {"games": 1, "aWins": 1}, "ino|stone": {"games": 13, "aWins": 10}, "ino|t_toni_": {"games": 1, "aWins": 1}, "haru-s|iselo2sei": {"games": 36, "aWins": 8}, "iselo2sei|t_toni_": {"games": 1, "aWins": 1}, "ke_ppy|stone": {"games": 10, "aWins": 6}, "ke_ppy|t_toni_": {"games": 1, "aWins": 1}, "haru-s|max": {"games": 5, "aWins": 2}, "max|t_toni_": {"games": 1, "aWins": 1}, "ino|ishi_sawada": {"games": 15, "aWins": 6}, "ishi_sawada|ke_ppy": {"games": 9, "aWins": 5}, "ishi_sawada|max": {"games": 1, "aWins": 1}, "AI1|ishi_sawada": {"games": 3, "aWins": 1}, "AI1|stone": {"games": 11, "aWins": 9}, "ishi_sawada|stone": {"games": 1, "aWins": 1}, "AI2|stone": {"games": 9, "aWins": 8}, "AI3|stone": {"games": 2, "aWins": 0}, "AI3|haru-s": {"games": 3, "aWins": 0}, "AI4|stone": {"games": 1, "aWins": 0}, "haru-s|iwsk": {"games": 16, "aWins": 6}, "iwsk|stone": {"games": 4, "aWins": 4}, "AI3|iwsk": {"games": 3, "aWins": 0}, "AI5|iselo2sei": {"games": 12, "aWins": 0}, "AI3|AI4": {"games": 11, "aWins": 11}, "AI3|AI5": {"games": 11, "aWins": 11}, "AI2|ishi_sawada": {"games": 1, "aWins": 1}, "AI5|ke_ppy": {"games": 2, "aWins": 0}, "MJ|ino": {"games": 17, "aWins": 6}, "MJ|ke_ppy": {"games": 26, "aWins": 8}, "MJ|haru-s": {"games": 20, "aWins": 10}, "AI2|iwsk": {"games": 2, "aWins": 0}, "MJ|iselo2sei": {"games": 28, "aWins": 8}, "haru-s|ishi_sawada": {"games": 14, "aWins": 4}, "MJ|iwsk": {"games": 16, "aWins": 7}, "MJ|junpei": {"games": 22, "aWins": 7}, "MJ|ishi_sawada": {"games": 12, "aWins": 3}, "ishi_sawada|iwsk": {"games": 4, "aWins": 2}, "iselo2sei|ishi_sawada": {"games": 4, "aWins": 3}, "ishi_sawada|junpei": {"games": 10, "aWins": 6}, "AI1|MJ": {"games": 9, "aWins": 4}, "junpei|urio0042": {"games": 4, "aWins": 1}, "AI2|MJ": {"games": 6, "aWins": 0}, "AI3|MJ": {"games": 2, "aWins": 0}, "AI1|urio0042": {"games": 3, "aWins": 0}, "AI2|urio0042": {"games": 2, "aWins": 0}, "AI3|urio0042": {"games": 2, "aWins": 0}, "iselo2sei|urio0042": {"games": 3, "aWins": 2}, "MJ|max": {"games": 2, "aWins": 1}, "MJ|urio0042": {"games": 1, "aWins": 1}, "ishi_sawada|urio0042": {"games": 2, "aWins": 2}, "ino|urio0042": {"games": 1, "aWins": 1}, "ke_ppy|urio0042": {"games": 1, "aWins": 1}}`);
+  SEED_H2H = JSON.parse(`{"ino|iselo2sei": {"games": 108, "aWins": 61}, "ino|ke_ppy": {"games": 89, "aWins": 46}, "iselo2sei|junpei": {"games": 110, "aWins": 37}, "junpei|ke_ppy": {"games": 113, "aWins": 65}, "ino|junpei": {"games": 156, "aWins": 68}, "AI1|ino": {"games": 56, "aWins": 45}, "AI2|ino": {"games": 53, "aWins": 31}, "iselo2sei|ke_ppy": {"games": 88, "aWins": 40}, "AI3|iselo2sei": {"games": 43, "aWins": 11}, "AI4|iselo2sei": {"games": 18, "aWins": 0}, "AI1|ke_ppy": {"games": 35, "aWins": 26}, "AI2|ke_ppy": {"games": 34, "aWins": 15}, "AI3|junpei": {"games": 42, "aWins": 2}, "AI4|junpei": {"games": 32, "aWins": 0}, "AI1|AI3": {"games": 75, "aWins": 75}, "AI1|AI4": {"games": 53, "aWins": 53}, "AI2|AI3": {"games": 56, "aWins": 56}, "AI2|AI4": {"games": 53, "aWins": 53}, "AI3|ino": {"games": 60, "aWins": 11}, "AI4|ino": {"games": 30, "aWins": 0}, "AI1|iselo2sei": {"games": 50, "aWins": 44}, "AI2|iselo2sei": {"games": 48, "aWins": 30}, "AI3|ke_ppy": {"games": 29, "aWins": 1}, "AI4|ke_ppy": {"games": 12, "aWins": 0}, "AI1|junpei": {"games": 53, "aWins": 44}, "AI2|junpei": {"games": 46, "aWins": 28}, "ino|iwsk": {"games": 23, "aWins": 12}, "iwsk|junpei": {"games": 37, "aWins": 15}, "iwsk|ke_ppy": {"games": 24, "aWins": 14}, "AI1|AI2": {"games": 33, "aWins": 33}, "haru-s|junpei": {"games": 21, "aWins": 1}, "AI1|haru-s": {"games": 18, "aWins": 17}, "AI2|haru-s": {"games": 11, "aWins": 7}, "haru-s|ino": {"games": 41, "aWins": 14}, "AI5|ino": {"games": 15, "aWins": 0}, "AI5|junpei": {"games": 22, "aWins": 0}, "AI1|AI5": {"games": 31, "aWins": 31}, "AI2|AI5": {"games": 31, "aWins": 31}, "haru-s|ke_ppy": {"games": 35, "aWins": 7}, "ke_ppy|max": {"games": 12, "aWins": 6}, "junpei|max": {"games": 12, "aWins": 9}, "AI1|max": {"games": 9, "aWins": 6}, "AI2|max": {"games": 5, "aWins": 4}, "iselo2sei|iwsk": {"games": 23, "aWins": 14}, "iwsk|max": {"games": 4, "aWins": 2}, "AI1|iwsk": {"games": 6, "aWins": 3}, "iselo2sei|max": {"games": 7, "aWins": 5}, "AI3|max": {"games": 3, "aWins": 1}, "ino|max": {"games": 7, "aWins": 4}, "iselo2sei|stone": {"games": 9, "aWins": 7}, "iselo2sei|s-kim": {"games": 1, "aWins": 1}, "haru-s|stone": {"games": 4, "aWins": 3}, "haru-s|s-kim": {"games": 1, "aWins": 1}, "junpei|stone": {"games": 14, "aWins": 12}, "junpei|s-kim": {"games": 1, "aWins": 1}, "max|stone": {"games": 8, "aWins": 4}, "max|s-kim": {"games": 1, "aWins": 1}, "ino|stone": {"games": 13, "aWins": 10}, "ino|t_toni_": {"games": 1, "aWins": 1}, "haru-s|iselo2sei": {"games": 36, "aWins": 8}, "iselo2sei|t_toni_": {"games": 1, "aWins": 1}, "ke_ppy|stone": {"games": 10, "aWins": 6}, "ke_ppy|t_toni_": {"games": 1, "aWins": 1}, "haru-s|max": {"games": 5, "aWins": 2}, "max|t_toni_": {"games": 1, "aWins": 1}, "ino|ishi_sawada": {"games": 15, "aWins": 6}, "ishi_sawada|ke_ppy": {"games": 9, "aWins": 5}, "ishi_sawada|max": {"games": 1, "aWins": 1}, "AI1|ishi_sawada": {"games": 3, "aWins": 1}, "AI1|stone": {"games": 11, "aWins": 9}, "ishi_sawada|stone": {"games": 1, "aWins": 1}, "AI2|stone": {"games": 9, "aWins": 8}, "AI3|stone": {"games": 2, "aWins": 0}, "AI3|haru-s": {"games": 3, "aWins": 0}, "AI4|stone": {"games": 1, "aWins": 0}, "haru-s|iwsk": {"games": 16, "aWins": 6}, "iwsk|stone": {"games": 4, "aWins": 4}, "AI3|iwsk": {"games": 3, "aWins": 0}, "AI5|iselo2sei": {"games": 12, "aWins": 0}, "AI3|AI4": {"games": 11, "aWins": 11}, "AI3|AI5": {"games": 11, "aWins": 11}, "AI2|ishi_sawada": {"games": 1, "aWins": 1}, "AI5|ke_ppy": {"games": 2, "aWins": 0}, "MJHotcake|ino": {"games": 17, "aWins": 6}, "MJHotcake|ke_ppy": {"games": 26, "aWins": 8}, "MJHotcake|haru-s": {"games": 20, "aWins": 10}, "AI2|iwsk": {"games": 2, "aWins": 0}, "MJHotcake|iselo2sei": {"games": 28, "aWins": 8}, "haru-s|ishi_sawada": {"games": 14, "aWins": 4}, "MJHotcake|iwsk": {"games": 16, "aWins": 7}, "MJHotcake|junpei": {"games": 22, "aWins": 7}, "MJHotcake|ishi_sawada": {"games": 12, "aWins": 3}, "ishi_sawada|iwsk": {"games": 4, "aWins": 2}, "iselo2sei|ishi_sawada": {"games": 4, "aWins": 3}, "ishi_sawada|junpei": {"games": 10, "aWins": 6}, "AI1|MJHotcake": {"games": 9, "aWins": 4}, "junpei|urio0042": {"games": 4, "aWins": 1}, "AI2|MJHotcake": {"games": 6, "aWins": 0}, "AI3|MJHotcake": {"games": 2, "aWins": 0}, "AI1|urio0042": {"games": 3, "aWins": 0}, "AI2|urio0042": {"games": 2, "aWins": 0}, "AI3|urio0042": {"games": 2, "aWins": 0}, "iselo2sei|urio0042": {"games": 3, "aWins": 2}, "MJHotcake|max": {"games": 2, "aWins": 1}, "MJHotcake|urio0042": {"games": 1, "aWins": 1}, "ishi_sawada|urio0042": {"games": 2, "aWins": 2}, "ino|urio0042": {"games": 1, "aWins": 1}, "ke_ppy|urio0042": {"games": 1, "aWins": 1}}`);
 } catch (e) { SEED_H2H = {}; }
 
 const BASE_ELO = 1500;
@@ -136,7 +136,7 @@ function levenshtein(a, b) {
   return dp[m][n];
 }
 
-// 画像/OCRから読み取った名前の表記ゆれ・誤読(例: "MJHotcake"→"MJ", "iselo2sei"→"isclo2sei")を、
+// 画像/OCRから読み取った名前の表記ゆれ・誤読(例: "Bishi_sawada"→"ishi_sawada", "iselo2sei"→"isclo2sei")を、
 // 既知のロスター名に寄せる。完全一致→部分一致→あいまい一致(編集距離)の順に試す。
 function matchToRosterName(rawName) {
   const norm = normalizeForMatch(rawName);
@@ -437,7 +437,64 @@ function StatBar({ wins, losses }) {
   );
 }
 
+function PlayerScoreDetail({ scoreHistory }) {
+  const n = scoreHistory.length;
+  const sum = (key) => scoreHistory.reduce((s, h) => s + (h[key] || 0), 0);
+  const avg = (key) => Math.round(sum(key) / n);
+  const total = Math.round(sum("total") / n);
+
+  const categories = [
+    { key: "military", label: "軍事" },
+    { key: "economy", label: "経済" },
+    { key: "tech", label: "テクノロジー" },
+    { key: "society", label: "社会" },
+  ];
+
+  return (
+    <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #3a3128" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 10 }}>
+        {categories.map((c) => (
+          <div key={c.key} style={{ minWidth: 70 }}>
+            <div style={{ fontSize: 10, color: "#8b7a6b", fontFamily: "'Inter', sans-serif" }}>{c.label}平均</div>
+            <div style={{ fontSize: 14, color: "#ede4d3", fontFamily: "'JetBrains Mono', monospace" }}>{avg(c.key).toLocaleString()}</div>
+          </div>
+        ))}
+        <div style={{ minWidth: 70 }}>
+          <div style={{ fontSize: 10, color: "#c9a227", fontFamily: "'Inter', sans-serif" }}>総合平均</div>
+          <div style={{ fontSize: 14, color: "#c9a227", fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>{total.toLocaleString()}</div>
+        </div>
+      </div>
+      <div style={{ fontSize: 10, color: "#665c4f", fontFamily: "'Inter', sans-serif", marginBottom: 4 }}>
+        記録された{n}試合の内訳(新しい順):
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        {[...scoreHistory].reverse().map((h, idx) => (
+          <div
+            key={idx}
+            style={{
+              display: "grid",
+              gridTemplateColumns: "72px repeat(5, 1fr)",
+              gap: 4,
+              fontSize: 11,
+              fontFamily: "'JetBrains Mono', monospace",
+              color: "#a89a86",
+            }}
+          >
+            <span style={{ color: "#665c4f" }}>{h.date || "―"}</span>
+            <span style={{ textAlign: "right" }}>軍{h.military || 0}</span>
+            <span style={{ textAlign: "right" }}>経{h.economy || 0}</span>
+            <span style={{ textAlign: "right" }}>技{h.tech || 0}</span>
+            <span style={{ textAlign: "right" }}>社{h.society || 0}</span>
+            <span style={{ textAlign: "right", color: "#c9a227" }}>総{h.total || 0}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Leaderboard({ agg }) {
+  const [expanded, setExpanded] = useState(() => new Set());
   const rows = HUMAN_NAMES
     .map((n) => ({ name: n, ...agg.players[n] }))
     .filter((r) => r.games > 0)
@@ -447,20 +504,34 @@ function Leaderboard({ agg }) {
     <div>
       <div style={{ marginBottom: 18 }}>
         <h2 style={h2Style}>リーダーボード</h2>
-        <p style={subText}>レートは初期値(過去の戦績とChatGPT分析の評価)から、記録した試合結果に応じて自動更新されます。</p>
+        <p style={subText}>レートは初期値(過去の戦績とChatGPT分析の評価)から、記録した試合結果に応じて自動更新されます。名前をクリックするとスコアの詳細(項目別平均・推移)が見られます。</p>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {rows.map((r, i) => {
           const wr = r.games ? (r.wins / r.games) * 100 : 0;
+          const hasScores = r.scoreHistory && r.scoreHistory.length > 0;
+          const isOpen = expanded.has(r.name);
           return (
-            <div key={r.name} style={cardStyle}>
+            <div
+              key={r.name}
+              style={{ ...cardStyle, cursor: hasScores ? "pointer" : "default" }}
+              onClick={() =>
+                hasScores &&
+                setExpanded((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(r.name)) next.delete(r.name);
+                  else next.add(r.name);
+                  return next;
+                })
+              }
+            >
               <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
                 <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 13, color: "#8b7a6b", width: 22 }}>
                   {String(i + 1).padStart(2, "0")}
                 </div>
                 <div style={{ flex: "0 0 130px" }}>
                   <div style={{ fontFamily: "'Cinzel', serif", fontWeight: 700, fontSize: 15, color: "#ede4d3" }}>
-                    {displayName(r.name)}
+                    {displayName(r.name)} {hasScores && <span style={{ color: "#665c4f", fontSize: 11 }}>{isOpen ? "▾" : "▸"}</span>}
                   </div>
                   <div style={{ marginTop: 4 }}>
                     <Badge elo={r.elo} />
@@ -477,12 +548,13 @@ function Leaderboard({ agg }) {
                   {Math.round(r.elo)}
                 </div>
               </div>
-              {r.scoreHistory && r.scoreHistory.length > 0 && (
+              {hasScores && !isOpen && (
                 <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #3a3128", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#8b7a6b" }}>
                   直近平均総合得点: {Math.round(r.scoreHistory.reduce((s, h) => s + h.total, 0) / r.scoreHistory.length).toLocaleString()}
                   {" "}({r.scoreHistory.length}試合分の記録)
                 </div>
               )}
+              {hasScores && isOpen && <PlayerScoreDetail scoreHistory={r.scoreHistory} />}
             </div>
           );
         })}
@@ -951,6 +1023,48 @@ async function saveMatches(next) {
   await window.storage.set("aoe2_matches", JSON.stringify(next), true);
 }
 
+function MatchScoreDetail({ scores }) {
+  const [open, setOpen] = useState(false);
+  const entries = Object.entries(scores);
+  return (
+    <div style={{ marginTop: 4 }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{ background: "none", border: "none", padding: 0, color: "#c9a227", fontSize: 11, fontFamily: "'Inter', sans-serif", cursor: "pointer" }}
+      >
+        {open ? "▾ 詳細スコアを閉じる" : "▸ 詳細スコアを見る"}
+      </button>
+      {open && (
+        <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 2 }}>
+          {entries.map(([n, s]) => {
+            const total = (s.military || 0) + (s.economy || 0) + (s.tech || 0) + (s.society || 0);
+            return (
+              <div
+                key={n}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "84px repeat(5, 1fr)",
+                  gap: 4,
+                  fontSize: 11,
+                  fontFamily: "'JetBrains Mono', monospace",
+                  color: "#a89a86",
+                }}
+              >
+                <span style={{ color: "#ede4d3" }}>{displayName(n)}</span>
+                <span style={{ textAlign: "right" }}>軍{s.military || 0}</span>
+                <span style={{ textAlign: "right" }}>経{s.economy || 0}</span>
+                <span style={{ textAlign: "right" }}>技{s.tech || 0}</span>
+                <span style={{ textAlign: "right" }}>社{s.society || 0}</span>
+                <span style={{ textAlign: "right", color: "#c9a227" }}>総{total}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MatchHistory({ matches, onDelete }) {
   const [confirmId, setConfirmId] = useState(null);
 
@@ -972,7 +1086,7 @@ function MatchHistory({ matches, onDelete }) {
         {[...matches].reverse().map((m) => (
           <div key={m.id} style={cardStyle}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-              <div>
+              <div style={{ flex: 1 }}>
                 <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: "#8b7a6b" }}>
                   {m.date || "日付なし"} {m.map ? `・${m.map}` : ""}
                 </div>
@@ -988,11 +1102,7 @@ function MatchHistory({ matches, onDelete }) {
                 {m.notes && (
                   <div style={{ marginTop: 6, fontSize: 12, color: "#8b7a6b", fontFamily: "'Inter', sans-serif" }}>{m.notes}</div>
                 )}
-                {m.scores && (
-                  <div style={{ marginTop: 4, fontSize: 11, color: "#665c4f", fontFamily: "'JetBrains Mono', monospace" }}>
-                    詳細スコアあり
-                  </div>
-                )}
+                {m.scores && <MatchScoreDetail scores={m.scores} />}
               </div>
               <div>
                 {confirmId === m.id ? (
