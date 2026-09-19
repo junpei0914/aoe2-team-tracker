@@ -36,7 +36,15 @@ install/build/lint/test に相当するコマンドはこのリポジトリに�
 
 ### スコアボードOCR(`AddMatch`)
 
-ユーザーはAoE2の試合終了後スコアボードのスクリーンショットをアップロード/貼り付けできます。base64エンコードして同じApps Scriptエンドポイントに(`type: "ocr_extract"` として)POSTし、Googleドライブの無料OCRにかけてテキストを取得します。`parseScoresFromOcrText` はテキストを1行ずつ走査し、`matchToRosterName`(完全一致→名前を含む→名前の断片→レーベンシュタイン距離によるあいまい一致の順)でOCRの誤読があってもプレイヤー名を認識し、同じ行・続く行の数値を最大5個(軍事/経済/テクノロジー/社会/総合)まで拾います。3文字以下の名前(`ino`/`max`/`AI1` など)は単語単位の一致のみ、数値だけの行や短い断片は名前扱いしません(以前 `st`→`stone`、`42`→`urio0042` の誤爆で他人のスコアが入る/空欄になる不具合があった)。総合が4項目の合計と一致しない、数値が5個未満、表が列ごとに出力された(名前が連続したあとに数値が続く)などの場合は推測で埋めず、`warnings` として画面に「要確認」を出します。これは常に下書き扱いであり、UI側で保存前に必ずレビュー・修正することを求めています。また、チーム分けや勝者をOCRから自動判定することはありません。
+ユーザーはAoE2の試合終了後スコアボードのスクリーンショットをアップロード/貼り付けできます。base64エンコードして同じApps Scriptエンドポイントに(`type: "ocr_extract"` として)POSTし、Googleドライブの無料OCRにかけてテキストを取得します。`parseScoresFromOcrText` はテキストを1行ずつ走査し、`matchToRosterName`(完全一致→名前を含む→名前の断片→レーベンシュタイン距離によるあいまい一致の順)でOCRの誤読があってもプレイヤー名を認識し、同じ行・続く行の数値を最大5個(軍事/経済/テクノロジー/社会/総合)まで拾います。3文字以下の名前(`ino`/`max`/`AI1` など)は単語単位の一致のみ、数値だけの行や短い断片は名前扱いしません(以前 `st`→`stone`、`42`→`urio0042` の誤爆で他人のスコアが入る/空欄になる不具合があった)。実際のスコアボードでは、途中から「名前が数人分まとめて並び、そのあとに数値が行順で5個ずつ続く」形で出力されることがあります(2026/9 の「他人のスコアが入る/空欄になる」不具合の直接の原因)。この場合は5個ずつに区切り、全員分「4項目の合計=総合」が成り立つときだけ行順に割り当てます。総合が合わない、数値が5個未満、並び順を確認できないなどの場合は推測で埋めず、`warnings` として画面に「要確認」を出します。これは常に下書き扱いであり、UI側で保存前に必ずレビュー・修正することを求めています。
+
+**チーム分け・勝者**はOCRの文字には出てこない(盾の中のチーム番号や王冠は画像)ため、`analyzeScoreboardImage` がcanvasでピクセルを直接解析し、`inferTeamsAndWinner` がOCRで分かった行順の名前(`parseScoresFromOcrText` の戻り値 `order`)と突き合わせます。
+
+- 行: 左端のアイコン枠(暗い画素)が縦に並ぶ位置
+- 勝者: 名前の旗の右側にある王冠(くすんだ金色の画素)の量。`CROWN_THRESHOLD`
+- チーム: 右端の盾をチームごとに形・色が違うことを利用して6x8マスの模様に要約し、似ている行同士をまとめる(番号自体は読まない)。`SHIELD_SAME_TEAM_MAX_DIFF`
+
+画像の行数と名前の数が合わない、盾が2種類に分かれない、王冠がちょうど一方のチーム全員に付いていない、といった場合は自動入力せず「要確認」を出します。画像の一番上の人のチームが Team A になります。AoE2 DE の結果画面(スコアタブ)をスコア表の部分だけ切り抜いた画像で調整しており、0.5〜3倍の拡大縮小や余白の有無では判定できることを確認済みです。
 
 ### OCR不具合の調査(デバッグログ)
 
@@ -47,13 +55,16 @@ OCRを実行するたびに、`AddMatch` がブラウザのIndexedDB(DB名 `aoe2
 - `imageDataUrl`: 貼り付けた画像そのもの(data URL)。見るときは次のコマンドでPNGに書き出してから Read します:
   `node -e "const j=require('./ocr-logs/<file>.json');j.logs.forEach(l=>l.imageDataUrl&&require('fs').writeFileSync('ocr-logs/'+l.id+'.png',Buffer.from(l.imageDataUrl.split(',')[1],'base64')))"`
 - `rawText`: GAS/Googleドライブ OCR が返した生テキスト
-- `trace`: `parseScoresFromOcrText` が各行をどう解釈したか(`name`(一致方法 `exact`/`partial`/`fragment`/`fuzzy`)/`number`/`skipped`/`ignored`/`name_without_numbers`/`discarded_column_layout`/`duplicate_ignored`)
+- `trace`: `parseScoresFromOcrText` が各行をどう解釈したか(`name`(一致方法 `exact`/`partial`/`fragment`/`fuzzy`)/`number`/`skipped`/`ignored`/`name_without_numbers`/`grouped_row_major`/`discarded_column_layout`/`duplicate_ignored`)
 - `warnings`: 画面に出した「要確認」メッセージ
+- `order`: 画面上の行順の名前
+- `imageAnalysis`: 画像解析の結果(各行の `top`/`bottom`、`crown`(王冠らしさ)、`shield`(盾の模様)、`shieldBox`)
+- `teamInference`: 推定したチーム分け・勝者
 - `parsed`: 解析結果(`rawNums` は拾った数値そのもの。5個目は総合で、保存には使われず合計チェックにのみ使う。`warning` はその人への要確認メッセージ)
 - `scoresBefore` / `scoresAfterOcr`: OCR直前の入力欄の状態と、自動入力後の状態(前回の読み取り結果が残っているとマージされる)
-- 保存後に追記される `savedMatch`、`scoresAtSave`、`finalScores`、`corrections`(OCR値→最終値の差分=ユーザーが手で直した箇所)
+- 保存後に追記される `savedMatch`、`scoresAtSave`、`finalScores`、`corrections`(OCR値→最終値の差分=ユーザーが手で直した箇所)、`teamCorrected`/`winnerCorrected`(画像から推定したチーム分け・勝者を手で直したか)
 
-`rawText` と `trace` を見れば、原因がOCR自体の誤読なのか、解析ロジック(名前の誤マッチ、数値の取りこぼしやずれ)なのかを切り分けられます。解析ロジックはブラウザで `parseScoresFromOcrText(rawText, trace = [])` を実行すれば再現できます。
+`rawText` と `trace` を見れば、原因がOCR自体の誤読なのか、解析ロジック(名前の誤マッチ、数値の取りこぼしやずれ)なのかを切り分けられます。解析ロジックはブラウザで `parseScoresFromOcrText(rawText, trace = [])` を実行すれば再現できます。画像の判定は `analyzeScoreboardImage(await loadImageData(imageDataUrl))` で再現できます(`file://` で開くとcanvasが読めないので、`python -m http.server` で配信して試す)。
 
 ## このリポジトリで見られる規約
 
