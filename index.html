@@ -142,39 +142,105 @@ function estimateRatings(matches) {
   recorded.forEach((m) => m.A.concat(m.B).forEach((k) => (weight[k] = (weight[k] || 0) + 1)));
   const keys = Object.keys(weight);
   const totalWeight = keys.reduce((s, k) => s + weight[k], 0);
+  const scoreTeams = buildScoreTeams(matches);
+  const c = Math.LN10 / 400;
   const r = {};
   keys.forEach((k) => (r[k] = priorRating(k)));
-  const c = Math.LN10 / 400;
   let mu = BASE_ELO;
-  for (let it = 0; it < 1000; it++) {
-    mu = keys.reduce((s, k) => s + r[k] * weight[k], 0) / totalWeight;
-    const g = {};
-    keys.forEach((k) => (g[k] = -(r[k] - priorRating(k)) / (RATING_PRIOR_SD * RATING_PRIOR_SD)));
-    obs.forEach((o) => {
-      let d;
-      if (o.type === "ind") d = (r[o.a] - mu) / N;
-      else if (o.type === "h2h") d = (r[o.a] - r[o.b]) / N;
-      else d = (r[o.a] + r[o.b] - 2 * mu) / N;
-      const grad = (o.w * (o.wins - o.games * eloWinProb(d)) * c) / N;
-      g[o.a] += grad;
-      if (o.type === "h2h") g[o.b] -= grad;
-      else if (o.type === "tm") g[o.b] += grad;
+
+  // 1回目は勝敗だけで推定し、その結果からスコアとレートの関係(scoreModel)を求めて、2回目にスコアも加えて推定し直す
+  const fit = (scoreModel) => {
+    for (let it = 0; it < 1000; it++) {
+      mu = keys.reduce((s, k) => s + r[k] * weight[k], 0) / totalWeight;
+      const g = {};
+      keys.forEach((k) => (g[k] = -(r[k] - priorRating(k)) / (RATING_PRIOR_SD * RATING_PRIOR_SD)));
+      obs.forEach((o) => {
+        let d;
+        if (o.type === "ind") d = (r[o.a] - mu) / N;
+        else if (o.type === "h2h") d = (r[o.a] - r[o.b]) / N;
+        else d = (r[o.a] + r[o.b] - 2 * mu) / N;
+        const grad = (o.w * (o.wins - o.games * eloWinProb(d)) * c) / N;
+        g[o.a] += grad;
+        if (o.type === "h2h") g[o.b] -= grad;
+        else if (o.type === "tm") g[o.b] += grad;
+      });
+      recorded.forEach((m) => {
+        const avg = (t) => t.reduce((s, k) => s + r[k], 0) / t.length;
+        const grad = (m.actualA - eloWinProb(avg(m.A) - avg(m.B))) * c;
+        m.A.forEach((k) => (g[k] += grad / m.A.length));
+        m.B.forEach((k) => (g[k] -= grad / m.B.length));
+      });
+      if (scoreModel) {
+        const { beta, sigma } = scoreModel;
+        scoreTeams.forEach((team) => {
+          const meanR = team.reduce((s, p) => s + r[p.key], 0) / team.length;
+          team.forEach((p) => {
+            const e = p.z - beta * (r[p.key] - meanR);
+            g[p.key] += (SCORE_WEIGHT * beta * e) / (sigma * sigma);
+          });
+        });
+      }
+      let maxStep = 0;
+      keys.forEach((k) => {
+        const step = 400 * g[k];
+        r[k] += step;
+        maxStep = Math.max(maxStep, Math.abs(step));
+      });
+      if (maxStep < 0.01) break;
+    }
+  };
+
+  fit(null);
+  const scoreModel = fitScoreModel(scoreTeams, r);
+  if (scoreModel) fit(scoreModel);
+  return { ratings: r, mu, teamSize: N, scoreModel };
+}
+
+/* ------------------------------------------------------------
+   スコアの反映
+   勝ったチームは全員スコアが高くなるので、「同じチームの味方と比べてどれだけスコアが高いか」
+   (総合得点の対数 − チーム平均)を個人の貢献とみなす。これが「味方と比べたレートの高さ」に比例する
+   (z ≈ beta × (本人のレート − チーム平均レート)、ばらつき sigma)というモデルで、レートの推定に加える。
+   beta と sigma は記録済みの試合からその都度推定する(2026/9: 100点差でスコア約1.29倍、相関0.76)。
+   スコアは役割(翼/ポケット)や文明の影響も受け、1試合でも勝敗よりはるかに多くの情報を持ってしまうため、
+   SCORE_WEIGHT で割り引いている(1試合のスコアの影響が、事前の評価の半分弱程度になる)。
+   ------------------------------------------------------------ */
+const SCORE_WEIGHT = 0.25;
+const SCORE_MIN_POINTS = 16; // これより少ないと beta を信頼できないのでスコアは使わない
+
+function buildScoreTeams(matches) {
+  const teams = [];
+  matches.forEach((m) => {
+    if (!m.scores) return;
+    [m.teamA || [], m.teamB || []].forEach((team) => {
+      const members = team
+        .filter((n) => m.scores[n])
+        .map((n) => {
+          const s = m.scores[n];
+          const total = (s.military || 0) + (s.economy || 0) + (s.tech || 0) + (s.society || 0);
+          return { key: ratingKey(n), logScore: Math.log(total + 100) };
+        });
+      if (members.length < 2) return;
+      const mean = members.reduce((s, p) => s + p.logScore, 0) / members.length;
+      teams.push(members.map((p) => ({ key: p.key, z: p.logScore - mean })));
     });
-    recorded.forEach((m) => {
-      const avg = (t) => t.reduce((s, k) => s + r[k], 0) / t.length;
-      const grad = (m.actualA - eloWinProb(avg(m.A) - avg(m.B))) * c;
-      m.A.forEach((k) => (g[k] += grad / m.A.length));
-      m.B.forEach((k) => (g[k] -= grad / m.B.length));
-    });
-    let maxStep = 0;
-    keys.forEach((k) => {
-      const step = 400 * g[k];
-      r[k] += step;
-      maxStep = Math.max(maxStep, Math.abs(step));
-    });
-    if (maxStep < 0.01) break;
-  }
-  return { ratings: r, mu, teamSize: N };
+  });
+  return teams;
+}
+
+function fitScoreModel(scoreTeams, r) {
+  const pts = [];
+  scoreTeams.forEach((team) => {
+    const meanR = team.reduce((s, p) => s + r[p.key], 0) / team.length;
+    team.forEach((p) => pts.push({ x: r[p.key] - meanR, z: p.z }));
+  });
+  if (pts.length < SCORE_MIN_POINTS) return null;
+  const sxx = pts.reduce((s, p) => s + p.x * p.x, 0);
+  if (sxx === 0) return null;
+  const beta = pts.reduce((s, p) => s + p.x * p.z, 0) / sxx;
+  if (!(beta > 0)) return null;
+  const sigma = Math.max(0.2, Math.sqrt(pts.reduce((s, p) => s + (p.z - beta * p.x) ** 2, 0) / (pts.length - 1)));
+  return { beta, sigma, points: pts.length };
 }
 
 const AGE_TIERS = [
@@ -1101,7 +1167,7 @@ function Leaderboard({ agg }) {
     <div>
       <div style={{ marginBottom: 18 }}>
         <h2 style={h2Style}>リーダーボード</h2>
-        <p style={subText}>レートは、過去221戦の成績(個人・チームメイト・直接対決)と記録した試合結果から推定しています(ChatGPT分析の評価を補助的に使用。試合数が少ない人ほど評価寄り)。試合を記録するたびに計算し直されます。名前をクリックするとスコアの詳細(項目別平均・推移)が見られます。</p>
+        <p style={subText}>レートは、過去221戦の成績(個人・チームメイト・直接対決)と記録した試合の勝敗・スコア(同じチームの味方と比べた得点の高さ)から推定しています(ChatGPT分析の評価を補助的に使用。試合数が少ない人ほど評価寄り)。試合を記録するたびに計算し直されます。名前をクリックするとスコアの詳細(項目別平均・推移)が見られます。</p>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {rows.map((r, i) => {
