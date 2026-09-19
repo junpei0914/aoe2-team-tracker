@@ -36,7 +36,24 @@ install/build/lint/test に相当するコマンドはこのリポジトリに�
 
 ### スコアボードOCR(`AddMatch`)
 
-ユーザーはAoE2の試合終了後スコアボードのスクリーンショットをアップロード/貼り付けできます。base64エンコードして同じApps Scriptエンドポイントに(`type: "ocr_extract"` として)POSTし、Googleドライブの無料OCRにかけてテキストを取得します。`parseScoresFromOcrText` はテキストを1行ずつ走査し、`matchToRosterName`(完全一致→部分一致→レーベンシュタイン距離によるあいまい一致の順)でOCRの誤読があってもプレイヤー名を認識し、続く数値行を最大5個(軍事/経済/テクノロジー/社会/総合)まで貪欲に拾います。これは常に下書き扱いであり、UI側で保存前に必ずレビュー・修正することを求めています。また、チーム分けや勝者をOCRから自動判定することはありません。
+ユーザーはAoE2の試合終了後スコアボードのスクリーンショットをアップロード/貼り付けできます。base64エンコードして同じApps Scriptエンドポイントに(`type: "ocr_extract"` として)POSTし、Googleドライブの無料OCRにかけてテキストを取得します。`parseScoresFromOcrText` はテキストを1行ずつ走査し、`matchToRosterName`(完全一致→名前を含む→名前の断片→レーベンシュタイン距離によるあいまい一致の順)でOCRの誤読があってもプレイヤー名を認識し、同じ行・続く行の数値を最大5個(軍事/経済/テクノロジー/社会/総合)まで拾います。3文字以下の名前(`ino`/`max`/`AI1` など)は単語単位の一致のみ、数値だけの行や短い断片は名前扱いしません(以前 `st`→`stone`、`42`→`urio0042` の誤爆で他人のスコアが入る/空欄になる不具合があった)。総合が4項目の合計と一致しない、数値が5個未満、表が列ごとに出力された(名前が連続したあとに数値が続く)などの場合は推測で埋めず、`warnings` として画面に「要確認」を出します。これは常に下書き扱いであり、UI側で保存前に必ずレビュー・修正することを求めています。また、チーム分けや勝者をOCRから自動判定することはありません。
+
+### OCR不具合の調査(デバッグログ)
+
+OCRを実行するたびに、`AddMatch` がブラウザのIndexedDB(DB名 `aoe2_ocr_debug`、直近 `OCR_LOG_MAX`=30件)にログを記録します。IndexedDBが使えない環境では、ページを開いている間だけメモリに保持します。「試合を記録」タブの「OCRデバッグログを保存」リンクから、`aoe2-ocr-log-YYYYMMDD-HHMM.json` としてダウンロードできます。スプレッドシート側(GAS)には何も送りません。
+
+ユーザーから「違う人のスコアが入った」「空欄になった」などの報告があったら、このJSONを `ocr-logs/` に置いてもらって調査します(`ocr-logs/` は `.gitignore` 済み)。JSONの構成は `{ exportedAt, roster, logs: [...] }` で、`logs` の各要素は次のとおりです。
+
+- `imageDataUrl`: 貼り付けた画像そのもの(data URL)。見るときは次のコマンドでPNGに書き出してから Read します:
+  `node -e "const j=require('./ocr-logs/<file>.json');j.logs.forEach(l=>l.imageDataUrl&&require('fs').writeFileSync('ocr-logs/'+l.id+'.png',Buffer.from(l.imageDataUrl.split(',')[1],'base64')))"`
+- `rawText`: GAS/Googleドライブ OCR が返した生テキスト
+- `trace`: `parseScoresFromOcrText` が各行をどう解釈したか(`name`(一致方法 `exact`/`partial`/`fragment`/`fuzzy`)/`number`/`skipped`/`ignored`/`name_without_numbers`/`discarded_column_layout`/`duplicate_ignored`)
+- `warnings`: 画面に出した「要確認」メッセージ
+- `parsed`: 解析結果(`rawNums` は拾った数値そのもの。5個目は総合で、保存には使われず合計チェックにのみ使う。`warning` はその人への要確認メッセージ)
+- `scoresBefore` / `scoresAfterOcr`: OCR直前の入力欄の状態と、自動入力後の状態(前回の読み取り結果が残っているとマージされる)
+- 保存後に追記される `savedMatch`、`scoresAtSave`、`finalScores`、`corrections`(OCR値→最終値の差分=ユーザーが手で直した箇所)
+
+`rawText` と `trace` を見れば、原因がOCR自体の誤読なのか、解析ロジック(名前の誤マッチ、数値の取りこぼしやずれ)なのかを切り分けられます。解析ロジックはブラウザで `parseScoresFromOcrText(rawText, trace = [])` を実行すれば再現できます。
 
 ## このリポジトリで見られる規約
 
