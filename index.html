@@ -347,7 +347,7 @@ function parseScoresFromOcrText(text, trace) {
      盾を6x8マスの模様に要約し、似ている行同士を同じチームとみなす(番号自体は読まない)
    2026/9 時点の AoE2 DE の結果画面(スコアタブ)を、スコア表の部分だけ切り抜いた画像で調整している。
    ------------------------------------------------------------ */
-const CROWN_THRESHOLD = 0.06; // 王冠あり: 0.14〜0.18 / なし: 0.01以下(行間隔の2乗あたりの画素数)
+const CROWN_THRESHOLD = 0.07; // 王冠あり: 0.105〜0.18 / なし: 0.04以下(行間隔の2乗あたりの画素数。実画像4枚で計測)
 const SHIELD_SAME_TEAM_MAX_DIFF = 12; // 48マス中の違うマス数。同じチーム: 0〜3 / 別チーム: 30前後
 
 function loadImageData(dataUrl) {
@@ -541,12 +541,14 @@ function inferTeamsAndWinner(order, analysis) {
   result.teamA = a.idx.map((k) => order[k]);
   result.teamB = b.idx.map((k) => order[k]);
 
+  // 途中で投了・切断した人には、チームが勝っても王冠が付かない(2026/9/20 の iselo2sei)。
+  // そのため「王冠が付いた人が1人以上いて、全員が同じチーム」なら、そのチームを勝者とする
   const crowned = rows.map((r) => r.crown >= CROWN_THRESHOLD);
-  const allCrowned = (cl) => cl.idx.every((k) => crowned[k]);
-  const noneCrowned = (cl) => cl.idx.every((k) => !crowned[k]);
-  if (allCrowned(a) && noneCrowned(b)) result.winner = "A";
-  else if (allCrowned(b) && noneCrowned(a)) result.winner = "B";
-  else result.warnings.push("勝者を判定できませんでした(王冠マークがどちらか一方のチーム全員に付いていません)。");
+  const anyCrowned = (cl) => cl.idx.some((k) => crowned[k]);
+  if (anyCrowned(a) && !anyCrowned(b)) result.winner = "A";
+  else if (anyCrowned(b) && !anyCrowned(a)) result.winner = "B";
+  else if (!anyCrowned(a) && !anyCrowned(b)) result.warnings.push("勝者を判定できませんでした(王冠マークが見つかりません)。");
+  else result.warnings.push("勝者を判定できませんでした(両方のチームに王冠マークがあるように見えます)。");
   return result;
 }
 
