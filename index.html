@@ -804,6 +804,7 @@ function suggestSplits(selected, players, teammateMap) {
 
     splits.push({
       teamA, teamB, eloA, eloB, diff,
+      synergyA: synA.score * 1.5, synergyB: synB.score * 1.5,
       notesA: synA.notes, notesB: synB.notes,
     });
   });
@@ -1399,10 +1400,11 @@ function TeamBuilder({ agg }) {
       )}
 
       {splits.map((s, i) => {
-        // 表示中の avg どうしの差と一致させるため、丸めた後の値で内訳を出す
-        const totalDiff = Math.round(s.diff);
-        const eloDiff = Math.abs(Math.round(s.eloA) - Math.round(s.eloB));
-        const synergyDiff = totalDiff - eloDiff; // 相性で差が広がれば+、縮まれば−
+        // 各チームに表示している avg・相性の値と足し算が合うよう、丸めた後の値で内訳を出す(正ならTeam Aが上)
+        const eloEdge = Math.round(s.eloA) - Math.round(s.eloB);
+        const synergyEdge = Math.round(s.synergyA) - Math.round(s.synergyB);
+        const totalEdge = eloEdge + synergyEdge;
+        const edgeText = (v) => (v === 0 ? "差なし" : `${v > 0 ? "A" : "B"}+${Math.abs(v)}`);
         return (
         <div key={i} style={{ ...cardStyle, marginBottom: 12 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
@@ -1411,17 +1413,19 @@ function TeamBuilder({ agg }) {
             </span>
             <div
               style={{ textAlign: "right", fontFamily: "'JetBrains Mono', monospace" }}
-              title="実力差 = 平均レートの差 + 相性(一緒に組んだときの過去の勝率)による補正。この値が小さい順に提案しています。"
+              title="実力 = 平均レート + 相性(6戦以上一緒に組んだペアの過去の勝率から計算。要注意・好相性に表示されない中間のペアも含む)。実力差が小さい順に提案しています。"
             >
-              <div style={{ fontSize: 12, color: "#a89a86" }}>実力差(相性込み) {totalDiff}</div>
+              <div style={{ fontSize: 12, color: "#a89a86" }}>
+                実力差(相性込み) {Math.abs(totalEdge)}{totalEdge !== 0 && ` · Team ${totalEdge > 0 ? "A" : "B"}が上`}
+              </div>
               <div style={{ fontSize: 10, color: "#665c4f", marginTop: 2 }}>
-                平均レート差 {eloDiff} / 相性による差 {synergyDiff > 0 ? "+" : synergyDiff < 0 ? "−" : "±"}{Math.abs(synergyDiff)}
+                平均レート {edgeText(eloEdge)} / 相性 {edgeText(synergyEdge)}
               </div>
             </div>
           </div>
           <div style={{ display: "flex", gap: 20 }}>
-            <SplitTeam title="Team A" names={s.teamA} elo={s.eloA} color="#8fa876" notes={s.notesA} />
-            <SplitTeam title="Team B" names={s.teamB} elo={s.eloB} color="#c98a4b" notes={s.notesB} />
+            <SplitTeam title="Team A" names={s.teamA} elo={s.eloA} synergy={s.synergyA} color="#8fa876" notes={s.notesA} />
+            <SplitTeam title="Team B" names={s.teamB} elo={s.eloB} synergy={s.synergyB} color="#c98a4b" notes={s.notesB} />
           </div>
         </div>
         );
@@ -1434,11 +1438,15 @@ function TeamBuilder({ agg }) {
   );
 }
 
-function SplitTeam({ title, names, elo, color, notes }) {
+function SplitTeam({ title, names, elo, synergy, color, notes }) {
+  const syn = Math.round(synergy);
   return (
     <div style={{ flex: 1 }}>
       <div style={{ fontFamily: "'Cinzel', serif", fontWeight: 700, color, fontSize: 13, marginBottom: 6 }}>
         {title} <span style={{ color: "#8b7a6b", fontFamily: "'JetBrains Mono', monospace", fontWeight: 400 }}>avg {Math.round(elo)}</span>
+        <span style={{ color: syn > 0 ? "#8fa876" : syn < 0 ? "#c07a6f" : "#8b7a6b", fontFamily: "'JetBrains Mono', monospace", fontWeight: 400 }}>
+          {" "}· 相性 {syn > 0 ? "+" : syn < 0 ? "−" : "±"}{Math.abs(syn)}
+        </span>
       </div>
       {names.map((n) => (
         <div key={n} style={{ fontFamily: "'Inter', sans-serif", fontSize: 13, color: "#ede4d3" }}>{displayName(n)}</div>
