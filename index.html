@@ -16,7 +16,7 @@
 <div id="root"></div>
 
 <script type="text/plain" id="app-source">
-const { useState, useEffect, useMemo, useCallback } = React;
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
 
 /* ============================================================
    シードデータ(過去の対戦表 + ChatGPT分析より)
@@ -137,31 +137,57 @@ function levenshtein(a, b) {
 }
 
 // 画像/OCRから読み取った名前の表記ゆれ・誤読(例: "Bishi_sawada"→"ishi_sawada", "iselo2sei"→"isclo2sei")を、
-// 既知のロスター名に寄せる。完全一致→部分一致→あいまい一致(編集距離)の順に試す。
-function matchToRosterName(rawName) {
+// 既知のロスター名に寄せる。完全一致→名前を含む→名前の断片→あいまい一致(編集距離)の順に試す。
+// どの方法で一致したか(exact/partial/fragment/fuzzy)も返す。OCRデバッグログのトレースに使う。
+// 注意: 以前は "st"→stone のような2文字の断片や、数値行 "42"→urio0042 まで名前扱いしてしまい、
+// 直前の人の数値の取り込みが打ち切られて空欄になったり、架空のプレイヤーに数値が入ったりしていた。
+const SHORT_NAME_LEN = 3; // ino / max / AI1 など。部分一致・断片一致は誤爆しやすいので単語単位の一致のみ
+function matchToRosterNameDetailed(rawName) {
   const norm = normalizeForMatch(rawName);
-  if (!norm || norm.length < 2) return null;
+  if (!norm || norm.length < 2 || /^\d+$/.test(norm)) return null;
+  const words = (rawName || "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
 
   for (const n of ALL_NAMES) {
-    if (normalizeForMatch(n) === norm) return n;
+    if (normalizeForMatch(n) === norm) return { name: n, method: "exact" };
   }
-  for (const n of ALL_NAMES) {
+  // 行の中に名前がまるごと含まれる(クランタグ付きなど)。長い名前を優先
+  const byLength = [...ALL_NAMES].sort((a, b) => normalizeForMatch(b).length - normalizeForMatch(a).length);
+  for (const n of byLength) {
     const nNorm = normalizeForMatch(n);
-    if (nNorm.length >= 2 && (norm.includes(nNorm) || nNorm.includes(norm))) return n;
+    const hit = nNorm.length <= SHORT_NAME_LEN ? words.includes(nNorm) : norm.includes(nNorm);
+    if (hit) return { name: n, method: "partial" };
+  }
+  // 名前の一部しか読めなかった場合(末尾の欠けなど)。短すぎる断片は採用しない
+  for (const n of byLength) {
+    const nNorm = normalizeForMatch(n);
+    if (nNorm.length > SHORT_NAME_LEN && norm.length >= Math.max(4, nNorm.length - 2) && nNorm.includes(norm)) {
+      return { name: n, method: "fragment" };
+    }
   }
   let best = null;
   let bestDist = Infinity;
+  let tie = false;
   ALL_NAMES.forEach((n) => {
     const nNorm = normalizeForMatch(n);
-    if (nNorm.length < 4) return; // 短い名前は誤爆しやすいのであいまい一致の対象外
+    // 短い名前は同じ長さの行のみ・1文字違いまで(例: "lno"→ino)
+    if (nNorm.length <= SHORT_NAME_LEN && norm.length !== nNorm.length) return;
     const dist = levenshtein(norm, nNorm);
     const threshold = Math.max(1, Math.floor(nNorm.length / 4));
-    if (dist <= threshold && dist < bestDist) {
+    if (dist > threshold) return;
+    if (dist < bestDist) {
       best = n;
       bestDist = dist;
+      tie = false;
+    } else if (dist === bestDist) {
+      tie = true;
     }
   });
-  return best;
+  return best && !tie ? { name: best, method: "fuzzy", dist: bestDist } : null;
+}
+
+function matchToRosterName(rawName) {
+  const m = matchToRosterNameDetailed(rawName);
+  return m ? m.name : null;
 }
 
 // スコアボード画像をApps Script経由でGoogleドライブの無料OCRにかけ、テキストを取得する
@@ -182,43 +208,96 @@ async function ocrExtractText(base64Data, mediaType) {
   return data.text || "";
 }
 
+// OCRの1行を「数値トークン」と「それ以外(名前部分)」に分ける。"junpei 5,680 6365" のように
+// 名前と数値が同じ行に出力されることもあるため。
+function splitOcrLine(line) {
+  const nums = [];
+  const rest = [];
+  line.split(/\s+/).filter(Boolean).forEach((tok) => {
+    if (/^\d[\d,，]*$/.test(tok)) nums.push(Number(tok.replace(/[,，]/g, "")));
+    else rest.push(tok);
+  });
+  return { nums, namePart: rest.join(" ") };
+}
+
 // OCRテキストを解析する。Googleドライブ経由のOCRは表組みを「名前の行→数値が1個ずつ並ぶ行」の
 // ように1列にバラして返すことが多いため、行を先頭から走査し、
-// ロスター名の行を見つけたら続く数値行を最大5個(軍事/経済/テクノロジー/社会/総合)拾う方式にしている。
-// レイアウト崩れなどで誤読することもあるため、あくまで下書き用。保存前に必ず確認・修正が必要。
-function parseScoresFromOcrText(text) {
+// ロスター名の行を見つけたら同じ行・続く行の数値を最大5個(軍事/経済/テクノロジー/社会/総合)拾う方式にしている。
+// 5個目の総合が4項目の合計と一致しない場合や、表が列ごとに出力されたと思われる場合は warnings に積み、
+// 推測で埋めずに手動確認を促す。あくまで下書き用。保存前に必ず確認・修正が必要。
+// trace に配列を渡すと、各行をどう解釈したか(名前/数値/無視/スキップ)を記録する(OCRデバッグログ用)。
+function parseScoresFromOcrText(text, trace) {
+  const log = (e) => { if (trace) trace.push(e); };
   const lines = text
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean);
-  const results = [];
+  const players = [];
+  const warnings = [];
+  const emptyNames = [];
+  const columnLayoutNames = new Set();
+  let emptyRun = 0; // 数値が1つも付かなかった名前が連続した数
   let i = 0;
   while (i < lines.length) {
-    const rn = matchToRosterName(lines[i]);
-    if (!rn) {
+    const head = splitOcrLine(lines[i]);
+    const m = head.namePart ? matchToRosterNameDetailed(head.namePart) : null;
+    if (!m) {
+      log({ line: i, text: lines[i], as: "ignored" });
       i++;
       continue;
     }
-    const nums = [];
+    const rn = m.name;
+    log({ line: i, text: lines[i], as: "name", name: rn, method: m.method, dist: m.dist, sameLineNums: head.nums.length || undefined });
+    const nums = head.nums.slice(0, 5);
     let j = i + 1;
     while (j < lines.length && nums.length < 5) {
-      const tok = lines[j].replace(/[,，]/g, "");
-      if (/^\d+$/.test(tok)) {
-        nums.push(Number(tok));
+      const { nums: lineNums, namePart } = splitOcrLine(lines[j]);
+      if (!namePart && lineNums.length) {
+        log({ line: j, text: lines[j], as: "number", for: rn });
+        nums.push(...lineNums.slice(0, 5 - nums.length));
         j++;
-      } else if (matchToRosterName(lines[j])) {
+      } else if (namePart && matchToRosterName(namePart)) {
         break; // 次のプレイヤー行に到達したので打ち切り
       } else {
+        log({ line: j, text: lines[j], as: "skipped", for: rn });
         j++; // アイコンの誤読などのゴミ行はスキップ
       }
     }
-    if (nums.length > 0) {
-      const [military = 0, economy = 0, tech = 0, society = 0] = nums;
-      results.push({ name: rn, military, economy, tech, society });
-    }
     i = j > i ? j : i + 1;
+
+    if (nums.length === 0) {
+      log({ line: i, as: "name_without_numbers", name: rn });
+      emptyNames.push(rn);
+      emptyRun++;
+      continue;
+    }
+    if (emptyRun >= 2) {
+      // 名前がまとめて並んだ後に数値が続く=表が列ごとに出力された形。この数値は他の人の分の可能性が高いので採用しない
+      log({ as: "discarded_column_layout", name: rn, nums });
+      const group = [...emptyNames.slice(-emptyRun), rn];
+      group.forEach((n) => columnLayoutNames.add(n));
+      warnings.push(`名前と数値が別々にまとめて読み取られたため、${group.map(displayName).join("・")} のスコアは自動入力していません。`);
+      emptyRun = 0;
+      continue;
+    }
+    emptyRun = 0;
+    if (players.some((p) => p.name === rn)) {
+      log({ as: "duplicate_ignored", name: rn, nums });
+      warnings.push(`${displayName(rn)} が2回読み取られたため、2回目は無視しました。`);
+      continue;
+    }
+    const [military = 0, economy = 0, tech = 0, society = 0] = nums;
+    let warning = null;
+    if (nums.length < 5) warning = `数値が${nums.length}個しか読み取れませんでした(5個必要)。項目がずれている可能性があります。`;
+    else if (military + economy + tech + society !== nums[4]) warning = `4項目の合計(${military + economy + tech + society})が総合(${nums[4]})と一致しません。`;
+    if (warning) warnings.push(`${displayName(rn)}: ${warning}`);
+    players.push({ name: rn, military, economy, tech, society, rawNums: nums, warning });
   }
-  return results;
+  const onlyEmpty = [...new Set(emptyNames)].filter((n) => !columnLayoutNames.has(n) && !players.some((p) => p.name === n));
+  if (onlyEmpty.length) {
+    warnings.push(`${onlyEmpty.map(displayName).join("・")} は名前は見つかりましたが数値を読み取れませんでした。`);
+  }
+  return { players, warnings };
 }
 
 function fileToBase64(file) {
@@ -228,6 +307,100 @@ function fileToBase64(file) {
     reader.onerror = () => reject(new Error("読み込みに失敗しました"));
     reader.readAsDataURL(file);
   });
+}
+
+// OCRの不具合調査用ログ。貼り付けた画像・OCR生テキスト・解析トレース・自動入力結果・保存時の最終値を
+// ブラウザのIndexedDBに残し、「OCRデバッグログを保存」ボタンでJSONとしてダウンロードできる。
+// 調査手順は CLAUDE.md の「OCR不具合の調査」を参照。ログ記録の失敗が本来の処理を妨げないよう、すべて握りつぶす。
+const OCR_LOG_DB = "aoe2_ocr_debug";
+const OCR_LOG_STORE = "logs";
+const OCR_LOG_MAX = 30;
+
+function openOcrLogDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(OCR_LOG_DB, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(OCR_LOG_STORE, { keyPath: "id" });
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function ocrLogRequest(mode, fn) {
+  return openOcrLogDb().then((db) => new Promise((resolve, reject) => {
+    const tx = db.transaction(OCR_LOG_STORE, mode);
+    const req = fn(tx.objectStore(OCR_LOG_STORE));
+    tx.oncomplete = () => { db.close(); resolve(req && req.result); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  }));
+}
+
+// IndexedDBが使えない環境(一部のサンドボックス等)でも、少なくとも開いている間のログはダウンロードできるようメモリにも持つ
+const ocrLogMemory = new Map();
+
+async function ocrLogGetAll() {
+  const merged = new Map();
+  try {
+    const all = await ocrLogRequest("readonly", (st) => st.getAll());
+    (all || []).forEach((e) => merged.set(e.id, e));
+  } catch (e) {
+    console.warn("OCRデバッグログの読み込みに失敗:", e);
+  }
+  ocrLogMemory.forEach((e, id) => merged.set(id, e));
+  return [...merged.values()].sort((a, b) => a.id - b.id);
+}
+
+async function ocrLogPut(entry) {
+  ocrLogMemory.set(entry.id, entry);
+  if (ocrLogMemory.size > OCR_LOG_MAX) ocrLogMemory.delete(ocrLogMemory.keys().next().value);
+  try {
+    await ocrLogRequest("readwrite", (st) => st.put(entry));
+    const all = await ocrLogGetAll();
+    const excess = all.slice(0, Math.max(0, all.length - OCR_LOG_MAX));
+    if (excess.length) await ocrLogRequest("readwrite", (st) => { excess.forEach((e) => st.delete(e.id)); });
+  } catch (e) {
+    console.warn("OCRデバッグログの保存に失敗:", e);
+  }
+}
+
+async function ocrLogUpdate(id, patch) {
+  if (ocrLogMemory.has(id)) ocrLogMemory.set(id, { ...ocrLogMemory.get(id), ...patch });
+  try {
+    const cur = await ocrLogRequest("readonly", (st) => st.get(id));
+    if (cur) await ocrLogRequest("readwrite", (st) => st.put({ ...cur, ...patch }));
+  } catch (e) {
+    console.warn("OCRデバッグログの更新に失敗:", e);
+  }
+}
+
+async function downloadOcrLogs() {
+  const logs = await ocrLogGetAll();
+  const payload = { exportedAt: new Date().toISOString(), roster: ALL_NAMES, logs };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const d = new Date();
+  const pad = (v) => String(v).padStart(2, "0");
+  a.href = url;
+  a.download = `aoe2-ocr-log-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return logs.length;
+}
+
+// OCRで自動入力された値と保存時の最終値の差分(ユーザーが手で直した箇所)
+function diffScores(ocrScores, finalScores) {
+  const diff = [];
+  const names = new Set([...Object.keys(ocrScores || {}), ...Object.keys(finalScores || {})]);
+  names.forEach((n) => {
+    SCORE_FIELDS.forEach(({ key }) => {
+      const before = ocrScores && ocrScores[n] ? ocrScores[n][key] ?? null : null;
+      const after = finalScores && finalScores[n] ? finalScores[n][key] ?? null : null;
+      if (before !== after) diff.push({ name: n, field: key, ocr: before, final: after });
+    });
+  });
+  return diff;
 }
 
 /* ============================================================
@@ -603,8 +776,11 @@ function AddMatch({ agg, onSave }) {
   const [saved, setSaved] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState(null);
-  const [unmatchedNames, setUnmatchedNames] = useState([]);
+  const [ocrWarnings, setOcrWarnings] = useState([]);
   const [ocrDebugText, setOcrDebugText] = useState("");
+  const [ocrLogMessage, setOcrLogMessage] = useState("");
+  // 前回保存以降のOCR実行のログID。保存時に最終スコアと修正差分を書き足す。
+  const pendingOcrLogIds = useRef([]);
 
   const toggle = (name, team) => {
     const inA = teamA.includes(name);
@@ -629,13 +805,34 @@ function AddMatch({ agg, onSave }) {
     if (!file) return;
     setExtracting(true);
     setExtractError(null);
-    setUnmatchedNames([]);
+    setOcrWarnings([]);
     setOcrDebugText("");
+    const logEntry = {
+      id: Date.now(),
+      createdAt: new Date().toISOString(),
+      fileName: file.name || null,
+      mediaType: file.type || null,
+      fileSize: file.size,
+      imageDataUrl: null,
+      rawText: null,
+      trace: [],
+      parsed: null,
+      scoresBefore: scores, // 前回の読み取り結果が残っていると、それとマージされる
+      scoresAfterOcr: null,
+      error: null,
+    };
     try {
       const base64 = await fileToBase64(file);
+      logEntry.imageDataUrl = `data:${file.type || "image/png"};base64,${base64}`;
       const text = await ocrExtractText(base64, file.type || "image/png");
+      logEntry.rawText = text;
       console.log("OCR raw text:\n" + text);
-      const found = parseScoresFromOcrText(text);
+      const { players: found, warnings } = parseScoresFromOcrText(text, logEntry.trace);
+      logEntry.parsed = found;
+      logEntry.warnings = warnings;
+      console.log("OCR parse trace:", logEntry.trace);
+      setOcrWarnings(warnings);
+      if (warnings.length) setOcrDebugText(text);
 
       if (found.length === 0) {
         setExtractError("スコアを読み取れませんでした。手動で入力してください。下に読み取った生テキストを表示しています。");
@@ -643,18 +840,20 @@ function AddMatch({ agg, onSave }) {
         return;
       }
 
-      setScores((prev) => {
-        const next = { ...prev };
-        found.forEach((p) => {
-          next[p.name] = { military: p.military, economy: p.economy, tech: p.tech, society: p.society };
-        });
-        return next;
+      const next = { ...scores };
+      found.forEach((p) => {
+        next[p.name] = { military: p.military, economy: p.economy, tech: p.tech, society: p.society };
       });
+      logEntry.scoresAfterOcr = next;
+      setScores(next);
       setShowScores(true);
     } catch (e) {
       console.error("OCR抽出エラー:", e);
+      logEntry.error = e && e.message ? e.message : String(e);
       setExtractError("画像の読み取りに失敗しました: " + (e && e.message ? e.message : String(e)));
     } finally {
+      pendingOcrLogIds.current.push(logEntry.id);
+      ocrLogPut(logEntry);
       setExtracting(false);
     }
   };
@@ -695,7 +894,21 @@ function AddMatch({ agg, onSave }) {
       });
       if (Object.keys(cleanScores).length === 0) cleanScores = null;
     }
-    onSave({ id: Date.now(), date, map, teamA, teamB, winner, notes: notes || undefined, scores: cleanScores });
+    const matchId = Date.now();
+    const scoresAtSave = scores;
+    const logIds = pendingOcrLogIds.current;
+    pendingOcrLogIds.current = [];
+    logIds.forEach(async (logId) => {
+      const entry = (await ocrLogGetAll()).find((e) => e.id === logId);
+      ocrLogUpdate(logId, {
+        savedAt: new Date().toISOString(),
+        savedMatch: { id: matchId, date, map, teamA, teamB, winner },
+        scoresAtSave, // 保存直前の入力欄の状態(チーム外の人の値も含む)
+        finalScores: cleanScores,
+        corrections: diffScores(entry && entry.scoresAfterOcr, cleanScores),
+      });
+    });
+    onSave({ id: matchId, date, map, teamA, teamB, winner, notes: notes || undefined, scores: cleanScores });
     setTeamA([]); setTeamB([]); setWinner(null); setDate(""); setMap(""); setNotes(""); setScores({}); setShowScores(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -728,17 +941,31 @@ function AddMatch({ agg, onSave }) {
         {extracting && <div style={{ marginTop: 8, fontSize: 12, color: "#c9a227", fontFamily: "'Inter', sans-serif" }}>読み取り中...(数秒〜十数秒かかります)</div>}
         {extractError && <div style={{ marginTop: 8, fontSize: 12, color: "#c07a6f", fontFamily: "'Inter', sans-serif" }}>{extractError}</div>}
         {ocrDebugText && (
-          <pre style={{ marginTop: 8, fontSize: 11, color: "#8b7a6b", background: "#171310", padding: 8, borderRadius: 6, whiteSpace: "pre-wrap", maxHeight: 200, overflow: "auto" }}>
+          <pre title="OCRが返した生テキスト" style={{ marginTop: 8, fontSize: 11, color: "#8b7a6b", background: "#171310", padding: 8, borderRadius: 6, whiteSpace: "pre-wrap", maxHeight: 200, overflow: "auto" }}>
             {ocrDebugText}
           </pre>
         )}
-        {unmatchedNames.length > 0 && (
-          <div style={{ marginTop: 8, fontSize: 12, color: "#c98a4b", fontFamily: "'Inter', sans-serif" }}>
-            名前を特定できませんでした: {unmatchedNames.join(", ")}(下のボタンで手動追加してください)
+        {ocrWarnings.length > 0 && (
+          <div style={{ marginTop: 8, fontSize: 12, color: "#c98a4b", fontFamily: "'Inter', sans-serif", lineHeight: 1.6 }}>
+            ⚠ 要確認(画像と見比べて手で直してください):
+            {ocrWarnings.map((w, i) => <div key={i}>・{w}</div>)}
           </div>
         )}
         <div style={{ marginTop: 8, fontSize: 11, color: "#665c4f", fontFamily: "'Inter', sans-serif" }}>
           OCR(文字読み取り)による下書きです。チーム分け・勝者は自動判定されません。読み取り結果は下のスコア欄に反映されるので、保存前に必ず内容を確認・修正してください。
+        </div>
+        <div style={{ marginTop: 6, fontSize: 11, color: "#665c4f", fontFamily: "'Inter', sans-serif" }}>
+          読み取りがおかしかったときは{" "}
+          <button
+            onClick={async () => {
+              const n = await downloadOcrLogs();
+              setOcrLogMessage(n > 0 ? `${n}件のログを保存しました` : "保存されたログがありません");
+            }}
+            style={{ background: "none", border: "none", padding: 0, color: "#c9a227", fontSize: 11, fontFamily: "'Inter', sans-serif", cursor: "pointer", textDecoration: "underline" }}
+          >
+            OCRデバッグログを保存
+          </button>
+          (画像・読み取り結果・修正内容。直近{OCR_LOG_MAX}回分をこのブラウザに記録しています){ocrLogMessage && ` — ${ocrLogMessage}`}
         </div>
         {Object.keys(scores).length > 0 && (
           <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #3a3128" }}>
