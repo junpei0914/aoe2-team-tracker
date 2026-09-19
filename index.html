@@ -1812,6 +1812,234 @@ function Synergy({ agg }) {
 }
 
 /* ============================================================
+   総評(Claude Code による分析)
+   文章は REVIEW_DATE 時点のデータを Claude Code が分析して書いた固定のテキスト。
+   数値(レート・勝率・スコア構成・相性・直接対決)は表示のたびに最新データから計算する。
+   文章を更新したいときは、Claude Code に「総評を最新データで書き直して」と頼む。
+   ============================================================ */
+const REVIEW_DATE = "2026/9/20";
+const REVIEW_BASIS = "過去221戦の集計と、スコア付きで記録された5試合(7/4〜9/20)";
+
+const REVIEW_OVERVIEW = [
+  {
+    title: "実力の序列ははっきりしている",
+    body: "junpei が頭ひとつ抜けていて、ino・ke_ppy・iselo2sei が続く上位4人、iwsk が中間、MJHotcake・urio0042・ishi_sawada・haru-s が下位というのが現在の推定です。上位4人と下位4人を分けると大きく偏るので、チーム分けでは「上位2人+下位2人」ずつの組み合わせが基本になります。",
+  },
+  {
+    title: "「相性」はほとんど実力差で説明できる",
+    body: "ペアの勝率は一見ばらつきが大きく見えますが、2人の実力から予想される勝率と比べると、ペア固有の相性は偶然のばらつきとほぼ区別できません。はっきりプラスと言えるのは ino×junpei くらいです。チーム分けは実力のバランスをそろえることがほぼすべてと考えてよさそうです。",
+  },
+  {
+    title: "上位ほど軍事スコアの割合が高い",
+    body: "スコアの内訳を見ると、全体平均は軍事34%・経済37%・技術26%です。junpei は軍事が46%と突出していて、ino・iselo2sei・ke_ppy も35%前後あります。一方、下位の MJHotcake・haru-s・ishi_sawada・urio0042 は軍事が13〜23%と少なく、経済や技術に偏っています。内政を固めるだけでなく、戦闘にどれだけ関われるかが勝敗や評価の差につながっている可能性があります。",
+  },
+  {
+    title: "分析の限界",
+    body: "スコアの傾向は5試合分(iwsk は3試合、urio0042 は2試合)しかなく、文明や役割(翼/ポケット)の影響も含んでいます。過去221戦は集計値しか残っていないので、時期による変化は追えません。記録が増えるほど精度が上がります。",
+  },
+];
+
+const PLAYER_REVIEWS = {
+  junpei: {
+    type: "軍事型のエース",
+    summary: "推定レート・通算勝率(63%)ともにトップ。記録試合の平均総合スコアも最も高く、特に軍事スコアが平均8,000を超えていて、スコアの半分近く(46%)が軍事です。前線で戦って試合を動かすタイプで、どちらのチームに入るかでチーム分けの軸になる存在です。",
+    points: [
+      "ino とのペアは58戦で勝率83%。実力を差し引いてもプラスが残る、唯一はっきりした好相性",
+      "haru-s には直接対決で21勝1敗と、実力差以上に強い",
+      "スコア付きの5試合では2勝3敗。強い分、相手チームが固められやすい",
+    ],
+  },
+  ino: {
+    type: "経済から押し切るオールラウンダー",
+    summary: "レートは2位。ChatGPTの評価(1584)より実績が高く、データで大きく上方修正されました。記録試合では経済スコアが全員中で最も高く(平均約6,000)、軍事も junpei に次ぐ2位。内政を伸ばしたうえで戦える、崩れにくいタイプです。",
+    points: [
+      "スコア付きの5試合で4勝1敗、9/19〜20は3戦全勝と好調",
+      "junpei とのペアは勝率83%の好相性",
+      "iselo2sei とは74戦組んで勝率50%と、実力から予想される58%を下回る。上位同士では珍しいマイナスの組み合わせ",
+    ],
+  },
+  ke_ppy: {
+    type: "バランス型(技術も高い)",
+    summary: "レートは3位。軍事36%・経済32%・技術30%とスコアの配分が最もバランスよく、技術スコアの割合は上位陣の中で一番高いです。どの役割でも一定以上の働きができるので、チーム分けで調整役にしやすいプレイヤーです。",
+    points: [
+      "junpei とのペアは54戦で勝率74%",
+      "iwsk には直接対決で11勝15敗と、実力から予想される勝率(56%)を下回る",
+      "iselo2sei とのペアは勝率48%で、予想よりやや低い",
+    ],
+  },
+  iselo2sei: {
+    type: "スコアで貢献するタイプ",
+    summary: "通算勝率は47%ですが、上位陣と当たることが多い分を差し引くと実力は上位4番手。記録試合では味方と比べてスコアが高い傾向があり、スコアを反映したことでレートが上がりました。社会スコアの平均は全員中で最も高いです。",
+    points: [
+      "haru-s に32勝9敗、MJHotcake に23勝9敗と、下位相手には実力差以上に勝っている",
+      "ishi_sawada とのペアは20戦で勝率75%",
+      "ino・ke_ppy とのペアは予想よりやや勝率が低い",
+    ],
+  },
+  iwsk: {
+    type: "中堅のバランス型",
+    summary: "レートは上位と下位の間の1,520前後で、通算勝率も51%とちょうど中間。スコアは軍事と経済が同じくらい(35%ずつ)で、クセのない配分です。ChatGPTの評価がないため、実績だけで推定しています。",
+    points: [
+      "ke_ppy には直接対決で15勝11敗と、予想(44%)を上回る",
+      "junpei とのペアは12戦で勝率83%",
+      "MJHotcake(7戦0勝)・haru-s(9戦0勝)と組んだときの勝率は低いが、試合数が少なく、ほぼ実力差で説明できる",
+    ],
+  },
+  MJHotcake: {
+    type: "内政・技術寄り",
+    summary: "ChatGPTの評価(1486)より実績が低く、レートは1,400前後。スコアは経済42%・技術32%と内政中心で、軍事の割合(22%)は全体平均(34%)を大きく下回ります。直接対決の成績は多くの相手でほぼ実力どおりです。",
+    points: [
+      "haru-s とは直接対決で11勝10敗とほぼ互角で、予想(60%)を下回る",
+      "ishi_sawada には直接対決で4勝12敗",
+      "軍事面での関わりを増やすと、スコアも勝率も伸びる余地がありそう",
+    ],
+  },
+  ishi_sawada: {
+    type: "最近復帰・技術寄り",
+    summary: "しばらく離れていて最近復帰したプレイヤー。通算勝率は67%と高いものの、勝った試合でもスコアはほぼ毎回8人中6〜7位で、強い人と組んで勝てていた面が大きいと考えられます。スコアは技術が40%と全員中で最も高く、軍事は21%と少なめです。",
+    points: [
+      "誰と組んでも予想より勝っているのは、本人の力というよりチーム分けの結果とみられる",
+      "スコアを反映したことで、レートは ChatGPT の評価(1318)に近い1,350前後に",
+      "復帰後の記録が増えれば、実力の変化も追えるようになる",
+    ],
+  },
+  "haru-s": {
+    type: "内政中心・成長途中",
+    summary: "通算勝率27%、レートは常連メンバーの中で最も低い1,190前後。スコアは経済が45%と内政中心で、軍事(23%)と社会(平均52)が少なめです。誰と組んでも勝率が低いのは相性ではなく実力差の問題で、個別の相性はほぼ関係ありません。",
+    points: [
+      "MJHotcake とは直接対決で10勝11敗と互角で、予想(40%)を上回る",
+      "チーム分けでは、上位の人と組ませてバランスを取るのが基本",
+      "軍事スコアを伸ばせると評価が大きく変わりそう",
+    ],
+  },
+  urio0042: {
+    type: "経済特化(データ少なめ)",
+    summary: "記録は7戦(スコア付きは2試合)と少なく、評価はまだ暫定的です。2試合のスコアでは経済が58%と極端に高く、軍事は13%とかなり少ない、典型的な内政重視のスタイル。味方と比べたスコアは悪くなく、スコアの反映でレートが上がりました。",
+    points: ["試合数が少ないので、今後の記録でレートが大きく動く可能性がある"],
+  },
+};
+
+const MINOR_PLAYER_NOTE = "stone(23戦・勝率26%)・max(20戦・勝率40%)・s-kim・t_toni_(各1戦)は、スコア付きの記録がなく、試合数も少ないため総評の対象外にしています。";
+
+const SCORE_COLORS = { military: "#c07a6f", economy: "#8fa876", tech: "#7f9bb5", society: "#c9a227" };
+
+function ScoreMixBar({ scoreHistory }) {
+  const totals = SCORE_FIELDS.map((f) => scoreHistory.reduce((s, r) => s + (r[f.key] || 0), 0));
+  const sum = totals.reduce((a, b) => a + b, 0);
+  if (!sum) return <div style={{ fontSize: 11, color: "#665c4f", fontFamily: "'Inter', sans-serif" }}>スコア付きの記録なし</div>;
+  return (
+    <div>
+      <div style={{ display: "flex", height: 10, borderRadius: 5, overflow: "hidden", background: "#171310" }}>
+        {SCORE_FIELDS.map((f, i) => (
+          <div key={f.key} title={`${f.label} ${Math.round((totals[i] / sum) * 100)}%`} style={{ width: `${(totals[i] / sum) * 100}%`, background: SCORE_COLORS[f.key] }} />
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 4, fontSize: 11, fontFamily: "'Inter', sans-serif", color: "#a89a86" }}>
+        {SCORE_FIELDS.map((f, i) => (
+          <span key={f.key}>
+            <span style={{ color: SCORE_COLORS[f.key] }}>■</span> {f.label} {Math.round((totals[i] / sum) * 100)}%
+          </span>
+        ))}
+        <span style={{ color: "#665c4f" }}>({scoreHistory.length}試合・平均総合 {Math.round(sum / scoreHistory.length).toLocaleString()})</span>
+      </div>
+    </div>
+  );
+}
+
+function PlayerReviewCard({ name, review, agg }) {
+  const p = agg.players[name];
+  if (!p) return null;
+  const others = HUMAN_NAMES.filter((m) => m !== name && (agg.players[m]?.games ?? 0) > 0);
+  const partners = others
+    .map((m) => ({ m, s: pairSynergy(name, m, agg) }))
+    .filter((x) => x.s && x.s.games >= 5)
+    .sort((a, b) => b.s.bonus - a.s.bonus);
+  const best = partners.filter((x) => x.s.bonus >= 3).slice(0, 2);
+  const worst = partners.filter((x) => x.s.bonus <= -3).slice(-2).reverse();
+  // 直接対決で、実力から予想される勝率と10%以上違う相手(10戦以上)
+  const h2h = others
+    .map((m) => {
+      const k = pairKey(name, m);
+      const h = agg.h2h[k];
+      if (!h || h.games < 10) return null;
+      const wins = k.split("|")[0] === name ? h.aWins : h.games - h.aWins;
+      const expected = eloWinProb((p.elo - agg.players[m].elo) / agg.ratingModel.teamSize);
+      return { m, wins, games: h.games, diff: wins / h.games - expected };
+    })
+    .filter((x) => x && Math.abs(x.diff) >= 0.1)
+    .sort((a, b) => b.diff - a.diff);
+  const tier = ageTier(p.elo);
+  const small = { fontSize: 11, fontFamily: "'Inter', sans-serif", color: "#a89a86", lineHeight: 1.7 };
+  return (
+    <div style={{ ...cardStyle, marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: 16, color: "#ede4d3" }}>{displayName(name)}</span>
+        <Badge elo={p.elo} />
+        <span style={{ fontSize: 12, color: "#c9a227", fontFamily: "'Inter', sans-serif", fontWeight: 600 }}>{review.type}</span>
+        <span style={{ marginLeft: "auto", fontFamily: "'JetBrains Mono', monospace", fontSize: 13, color: tier.color }}>
+          {Math.round(p.elo)} <span style={{ color: "#8b7a6b", fontSize: 11 }}>· {p.games}戦 勝率{Math.round((p.wins / p.games) * 100)}%</span>
+        </span>
+      </div>
+      <p style={{ ...subText, maxWidth: "none", color: "#ede4d3", marginTop: 10 }}>{review.summary}</p>
+      <ul style={{ margin: "6px 0 10px", paddingLeft: 18, fontSize: 12, color: "#a89a86", fontFamily: "'Inter', sans-serif", lineHeight: 1.7 }}>
+        {review.points.map((pt, i) => <li key={i}>{pt}</li>)}
+      </ul>
+      <div style={{ borderTop: "1px solid #3a3128", paddingTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+        <div style={{ fontSize: 10, color: "#665c4f", fontFamily: "'Inter', sans-serif" }}>最新データ</div>
+        <ScoreMixBar scoreHistory={p.scoreHistory} />
+        {(best.length > 0 || worst.length > 0) && (
+          <div style={small}>
+            相性(実力を差し引いた補正):
+            {best.map((x) => <span key={x.m} style={{ color: "#8fa876" }}> ◎{displayName(x.m)} +{Math.round(x.s.bonus)}</span>)}
+            {worst.map((x) => <span key={x.m} style={{ color: "#c07a6f" }}> ✕{displayName(x.m)} −{Math.abs(Math.round(x.s.bonus))}</span>)}
+          </div>
+        )}
+        {h2h.length > 0 && (
+          <div style={small}>
+            直接対決で実力以上/以下:
+            {h2h.map((x) => (
+              <span key={x.m} style={{ color: x.diff > 0 ? "#8fa876" : "#c07a6f" }}>
+                {" "}{displayName(x.m)} {x.wins}勝{x.games - x.wins}敗
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PlayerReviews({ agg }) {
+  const names = Object.keys(PLAYER_REVIEWS)
+    .filter((n) => agg.players[n])
+    .sort((a, b) => agg.players[b].elo - agg.players[a].elo);
+  return (
+    <div>
+      <h2 style={h2Style}>総評</h2>
+      <p style={subText}>
+        Claude Code が {REVIEW_BASIS} を分析した総評です({REVIEW_DATE} 時点)。文章は分析時点のもので、各カード下部の「最新データ」は記録が増えるたびに自動で更新されます。
+      </p>
+
+      <h3 style={{ ...h3Style, marginTop: 20 }}>全体の傾向</h3>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 24 }}>
+        {REVIEW_OVERVIEW.map((o) => (
+          <div key={o.title} style={cardStyle}>
+            <div style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: 13, color: "#ede4d3" }}>{o.title}</div>
+            <p style={{ ...subText, maxWidth: "none", marginTop: 4 }}>{o.body}</p>
+          </div>
+        ))}
+      </div>
+
+      <h3 style={h3Style}>プレイヤー別(現在のレート順)</h3>
+      {names.map((n) => (
+        <PlayerReviewCard key={n} name={n} review={PLAYER_REVIEWS[n]} agg={agg} />
+      ))}
+      <p style={{ ...subText, fontSize: 12 }}>{MINOR_PLAYER_NOTE}</p>
+    </div>
+  );
+}
+
+/* ============================================================
    スタイル
    ============================================================ */
 const h2Style = { fontFamily: "'Cinzel', serif", fontWeight: 700, fontSize: 20, color: "#ede4d3", letterSpacing: "0.02em", margin: 0 };
@@ -2008,6 +2236,7 @@ function App() {
     { id: "history", label: "試合履歴" },
     { id: "build", label: "チーム分け提案" },
     { id: "synergy", label: "相性データ" },
+    { id: "review", label: "総評" },
   ];
 
   return (
@@ -2049,6 +2278,7 @@ function App() {
       {tab === "history" && <MatchHistory matches={matches} onDelete={handleDeleteMatch} />}
       {tab === "build" && <TeamBuilder agg={agg} matches={matches} />}
       {tab === "synergy" && <Synergy agg={agg} />}
+      {tab === "review" && <PlayerReviews agg={agg} />}
     </div>
   );
 }

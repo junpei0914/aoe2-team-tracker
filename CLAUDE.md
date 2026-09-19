@@ -76,6 +76,10 @@ OCRを実行するたびに、`AddMatch` がブラウザのIndexedDB(DB名 `aoe2
 
 `rawText` と `trace` を見れば、原因がOCR自体の誤読なのか、解析ロジック(名前の誤マッチ、数値の取りこぼしやずれ)なのかを切り分けられます。解析ロジックはブラウザで `parseScoresFromOcrText(rawText, trace = [])` を実行すれば再現できます。画像の判定は `analyzeScoreboardImage(await loadImageData(imageDataUrl))` で再現できます(`file://` で開くとcanvasが読めないので、`python -m http.server` で配信して試す)。
 
+### 総評タブ(`PlayerReviews`)
+
+各プレイヤーの傾向・評価を載せたページです。文章(`REVIEW_OVERVIEW` / `PLAYER_REVIEWS`)は、`REVIEW_DATE` 時点のデータを Claude Code が分析して書いた固定テキストです。各カード下部の「最新データ」(スコア構成・相性・直接対決)は表示のたびに計算します。ユーザーから「総評を更新して」と頼まれたら、最新データ(レート、勝率、スコアの内訳と味方比、`pairSynergy`、実力から予想される勝率と比べた直接対決)を集計し直して、文章と `REVIEW_DATE` / `REVIEW_BASIS` を書き換えます。書いた数値は必ずデータと照合すること(直接対決の勝敗はどちら側から見た数字かを間違えやすい)。
+
 ## このリポジトリで見られる規約
 
 - UI文言・コードコメント・コミットメッセージはすべて日本語です。
