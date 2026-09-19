@@ -62,41 +62,119 @@ try {
 } catch (e) { SEED_H2H = {}; }
 
 const BASE_ELO = 1500;
-const K_FACTOR = 22;
 
 function pairKey(a, b) {
   return [a, b].sort().join("|");
 }
 
-const AI_COMBINED = (() => {
-  const names = Object.keys(SEED_PLAYERS).filter((n) => SEED_PLAYERS[n].isAI);
-  const games = names.reduce((s, n) => s + SEED_PLAYERS[n].games, 0);
-  const wins = names.reduce((s, n) => s + SEED_PLAYERS[n].wins, 0);
-  const losses = names.reduce((s, n) => s + SEED_PLAYERS[n].losses, 0);
-  return { games, wins, losses };
+// チーム平均レートの差 d から、勝つ確率を返す(Eloと同じ尺度)
+function eloWinProb(d) {
+  return 1 / (1 + Math.pow(10, -d / 400));
+}
+
+/* ------------------------------------------------------------
+   レートの推定
+   過去221戦は試合ごとの記録がなく集計値(個人の勝敗・チームメイト時の成績・直接対決の成績)しかないため、
+   Eloを1試合ずつ流すことはできない。そこで「チームの強さ=メンバーのレートの平均」というEloと同じモデルで、
+   集計値と記録済みの試合をもっともよく説明するレートを最尤推定する(毎回ゼロから計算し直す)。
+   ・集計値は、同じ人以外のメンバーを平均的なプレイヤーとみなして使う
+     例: xとyの直接対決 → チーム平均の差は (r_x − r_y) / 平均チーム人数
+   ・1試合が集計の中で何回も数えられている(個人8回・直接対決16回など)ので、1試合=1回分になるよう重みを下げる
+   ・記録済みの試合はチーム構成が分かっているのでそのまま使う
+   ・ChatGPTの評価(なければ1500)を事前分布の中心にする(標準偏差 RATING_PRIOR_SD)。
+     試合数の多い人はデータが優先され、少ない人は評価寄りになる
+   ・AI1〜5は「誰が勝った方から順に記録されたか」でラベルが偏っているので、1人の「AI」としてまとめて推定する
+   ------------------------------------------------------------ */
+const RATING_PRIOR_SD = 200; // 評価をどれだけ信じるか。100〜300で比較し、データと評価の中間として200にした
+const SEED_GAMES = 221;
+const AI_KEY = "AI";
+const ratingKey = (n) => (SEED_PLAYERS[n]?.isAI || /^AI\d*$/.test(n) ? AI_KEY : n);
+
+function priorRating(key) {
+  return CHATGPT_RATING[key] !== undefined ? BASE_ELO + (CHATGPT_RATING[key] - 85) * 14 : BASE_ELO;
+}
+
+const SEED_OBS = (() => {
+  const ind = {};
+  Object.entries(SEED_PLAYERS).forEach(([n, v]) => {
+    const k = ratingKey(n);
+    ind[k] = ind[k] || { games: 0, wins: 0 };
+    ind[k].games += v.games;
+    ind[k].wins += v.wins;
+  });
+  const playerGames = Object.values(ind).reduce((s, v) => s + v.games, 0);
+  const teamSize = playerGames / (2 * SEED_GAMES);
+  const mergePairs = (src, winsOf) => {
+    const acc = {};
+    Object.entries(src).forEach(([k, v]) => {
+      const [x, y] = k.split("|"); // 直接対決の aWins は x(ソート順で先)の勝ち数
+      const a = ratingKey(x), b = ratingKey(y);
+      if (a === b) return; // AI同士
+      const key = a + "|" + b;
+      acc[key] = acc[key] || { a, b, games: 0, wins: 0 };
+      acc[key].games += v.games;
+      acc[key].wins += winsOf(v);
+    });
+    return Object.values(acc);
+  };
+  const h2h = mergePairs(SEED_H2H, (v) => v.aWins);
+  const tm = mergePairs(SEED_TEAMMATE, (v) => v.wins);
+  const perGame = (list) => list.reduce((s, o) => s + o.games, 0) / SEED_GAMES;
+  // 個人・直接対決・チームメイトの3通りで同じ試合を見ているので、さらに1/3にする
+  const wInd = 1 / ((playerGames / SEED_GAMES) * 3);
+  const wH2h = 1 / (perGame(h2h) * 3);
+  const wTm = 1 / (perGame(tm) * 3);
+  const obs = [
+    ...Object.entries(ind).map(([a, v]) => ({ type: "ind", a, games: v.games, wins: v.wins, w: wInd })),
+    ...h2h.map((o) => ({ type: "h2h", ...o, w: wH2h })),
+    ...tm.map((o) => ({ type: "tm", ...o, w: wTm })),
+  ];
+  return { obs, teamSize, seedGames: ind };
 })();
 
-// AI1〜5は「誰が勝った方から順に記録されたか」というバイアスがあるため、
-// 個別の強さは無視し、AI全体の合算成績から算出した1つの固定レートを全AIに適用する。
-const AI_FIXED_ELO = (() => {
-  if (AI_COMBINED.games === 0) return BASE_ELO;
-  const wr = AI_COMBINED.wins / AI_COMBINED.games;
-  const shrink = Math.min(AI_COMBINED.games, 30) / 30;
-  const adjWr = 0.5 + (wr - 0.5) * shrink;
-  return Math.round(BASE_ELO + (adjWr - 0.5) * 600);
-})();
-
-function initialElo(name) {
-  if (SEED_PLAYERS[name]?.isAI || name.startsWith("AI")) return AI_FIXED_ELO;
-  const stats = SEED_PLAYERS[name] || { games: 0, wins: 0, losses: 0 };
-  if (CHATGPT_RATING[name] !== undefined) {
-    return Math.round(BASE_ELO + (CHATGPT_RATING[name] - 85) * 14);
+function estimateRatings(matches) {
+  const { obs, teamSize: N, seedGames } = SEED_OBS;
+  const weight = {}; // 平均的なプレイヤー(μ)を計算するときの重み=出場数
+  Object.entries(seedGames).forEach(([k, v]) => (weight[k] = v.games));
+  const recorded = matches
+    .filter((m) => (m.winner === "A" || m.winner === "B") && (m.teamA || []).length && (m.teamB || []).length)
+    .map((m) => ({ A: m.teamA.map(ratingKey), B: m.teamB.map(ratingKey), actualA: m.winner === "A" ? 1 : 0 }));
+  recorded.forEach((m) => m.A.concat(m.B).forEach((k) => (weight[k] = (weight[k] || 0) + 1)));
+  const keys = Object.keys(weight);
+  const totalWeight = keys.reduce((s, k) => s + weight[k], 0);
+  const r = {};
+  keys.forEach((k) => (r[k] = priorRating(k)));
+  const c = Math.LN10 / 400;
+  let mu = BASE_ELO;
+  for (let it = 0; it < 1000; it++) {
+    mu = keys.reduce((s, k) => s + r[k] * weight[k], 0) / totalWeight;
+    const g = {};
+    keys.forEach((k) => (g[k] = -(r[k] - priorRating(k)) / (RATING_PRIOR_SD * RATING_PRIOR_SD)));
+    obs.forEach((o) => {
+      let d;
+      if (o.type === "ind") d = (r[o.a] - mu) / N;
+      else if (o.type === "h2h") d = (r[o.a] - r[o.b]) / N;
+      else d = (r[o.a] + r[o.b] - 2 * mu) / N;
+      const grad = (o.w * (o.wins - o.games * eloWinProb(d)) * c) / N;
+      g[o.a] += grad;
+      if (o.type === "h2h") g[o.b] -= grad;
+      else if (o.type === "tm") g[o.b] += grad;
+    });
+    recorded.forEach((m) => {
+      const avg = (t) => t.reduce((s, k) => s + r[k], 0) / t.length;
+      const grad = (m.actualA - eloWinProb(avg(m.A) - avg(m.B))) * c;
+      m.A.forEach((k) => (g[k] += grad / m.A.length));
+      m.B.forEach((k) => (g[k] -= grad / m.B.length));
+    });
+    let maxStep = 0;
+    keys.forEach((k) => {
+      const step = 400 * g[k];
+      r[k] += step;
+      maxStep = Math.max(maxStep, Math.abs(step));
+    });
+    if (maxStep < 0.01) break;
   }
-  if (stats.games === 0) return BASE_ELO;
-  const wr = stats.wins / stats.games;
-  const shrink = Math.min(stats.games, 30) / 30; // 少ない試合数ほど1500に寄せる
-  const adjWr = 0.5 + (wr - 0.5) * shrink;
-  return Math.round(BASE_ELO + (adjWr - 0.5) * 600);
+  return { ratings: r, mu, teamSize: N };
 }
 
 const AGE_TIERS = [
@@ -662,7 +740,7 @@ function computeAggregates(userMatches) {
   const players = {};
   ALL_NAMES.forEach((n) => {
     const seed = SEED_PLAYERS[n];
-    players[n] = { games: seed.games, wins: seed.wins, losses: seed.losses, elo: initialElo(n), isAI: seed.isAI, scoreHistory: [] };
+    players[n] = { games: seed.games, wins: seed.wins, losses: seed.losses, elo: BASE_ELO, isAI: seed.isAI, scoreHistory: [] };
   });
   const teammate = {};
   Object.entries(SEED_TEAMMATE).forEach(([k, v]) => (teammate[k] = { ...v }));
@@ -680,18 +758,6 @@ function computeAggregates(userMatches) {
     const teamB = m.teamB || [];
     teamA.concat(teamB).forEach(ensurePlayer);
     if (teamA.length === 0 || teamB.length === 0) return;
-
-    const avgElo = (team) => team.reduce((s, n) => s + players[n].elo, 0) / team.length;
-    const eloA = avgElo(teamA);
-    const eloB = avgElo(teamB);
-    const expectedA = 1 / (1 + Math.pow(10, (eloB - eloA) / 400));
-    let actualA = 0.5;
-    if (m.winner === "A") actualA = 1;
-    else if (m.winner === "B") actualA = 0;
-
-    const deltaA = Math.round(K_FACTOR * (actualA - expectedA));
-    teamA.forEach((n) => { if (!players[n].isAI) players[n].elo += deltaA; });
-    teamB.forEach((n) => { if (!players[n].isAI) players[n].elo -= deltaA; });
 
     if (m.winner === "A" || m.winner === "B") {
       teamA.forEach((n) => {
@@ -737,7 +803,14 @@ function computeAggregates(userMatches) {
     }
   });
 
-  return { players, teammate, h2h };
+  // レートは記録済みの全試合と過去の集計からまとめて推定する(Eloの差分更新はしない)
+  const ratingModel = estimateRatings(matches);
+  Object.keys(players).forEach((n) => {
+    players[n].elo = ratingModel.ratings[ratingKey(n)] ?? priorRating(ratingKey(n));
+  });
+
+  const synergyModel = buildSynergyModel(players, teammate, ratingModel);
+  return { players, teammate, h2h, ratingModel, synergyModel };
 }
 
 /* ============================================================
@@ -760,56 +833,154 @@ function combinations(arr, k) {
   return result;
 }
 
-function synergyScoreForTeam(team, teammateMap) {
+/* ------------------------------------------------------------
+   相性
+   ペアで組んだときの勝率は、相性よりも2人それぞれの強さでほぼ決まる(弱い人は誰と組んでも勝率が低い)。
+   そこで「2人のレートから予想される勝率」との差を相性とみなす。さらに試合数が少ないほど偶然の偏りが
+   大きいので、経験ベイズで0に寄せる。SYNERGY_TAU は本当の相性の散らばり(勝率で±9%程度)で、
+   2026/9 時点のデータから「観測されたばらつき − 試合数から見込まれる偶然のばらつき」で推定した値。
+   結果はチーム平均レートと同じ単位(そのペアが同じチームにいると、チーム平均が何点分強くなるか)で返す。
+   ------------------------------------------------------------ */
+const SYNERGY_NOTE_MIN = 10; // これ以上の補正があるペアを「好相性/要注意」として表示
+
+// 相性の元になる「予想との差」を、全体の偏り・各人の偏り・ペア固有の部分に分ける。
+// 例: ishi_sawada は誰と組んでも予想より勝っている → それはレートが低めに出ているせいで、相性ではない。
+// ペア固有の部分だけを相性とし、その本当の散らばり(tau)を「観測されたばらつき − 偶然のばらつき」で推定する。
+function buildSynergyModel(players, teammate, ratingModel) {
+  const { mu, teamSize } = ratingModel;
+  const pairs = Object.entries(teammate)
+    .map(([k, v]) => {
+      const [a, b] = k.split("|");
+      if (ratingKey(a) === AI_KEY || ratingKey(b) === AI_KEY || !v.games || !players[a] || !players[b]) return null;
+      const expected = eloWinProb((players[a].elo + players[b].elo - 2 * mu) / teamSize);
+      return { a, b, games: v.games, expected, resid: v.wins / v.games - expected };
+    })
+    .filter(Boolean);
+  const totalGames = pairs.reduce((s, p) => s + p.games, 0) || 1;
+  const globalMean = pairs.reduce((s, p) => s + p.resid * p.games, 0) / totalGames;
+  const offsetAcc = {};
+  pairs.forEach((p) => [p.a, p.b].forEach((n) => {
+    offsetAcc[n] = offsetAcc[n] || { sum: 0, games: 0 };
+    offsetAcc[n].sum += (p.resid - globalMean) * p.games;
+    offsetAcc[n].games += p.games;
+  }));
+  // 各人の偏りも、試合数が少ないうちは0に寄せる(20試合分の0を足す)
+  const offset = {};
+  Object.entries(offsetAcc).forEach(([n, o]) => (offset[n] = o.sum / (o.games + 20)));
+  const specific = (p) => p.resid - globalMean - (offset[p.a] || 0) - (offset[p.b] || 0);
+  const excess = pairs.reduce((s, p) => s + p.games * specific(p) ** 2 - p.expected * (1 - p.expected), 0) / totalGames;
+  const tau = Math.max(0.03, Math.sqrt(Math.max(0, excess)));
+  return { globalMean, offset, tau };
+}
+
+function pairSynergy(a, b, agg) {
+  if (ratingKey(a) === AI_KEY || ratingKey(b) === AI_KEY) return null; // AIのラベルは偏っているので対象外
+  const rec = agg.teammate[pairKey(a, b)];
+  if (!rec || rec.games === 0) return null;
+  const { mu, teamSize } = agg.ratingModel;
+  const { globalMean, offset, tau } = agg.synergyModel;
+  const expected = eloWinProb((agg.players[a].elo + agg.players[b].elo - 2 * mu) / teamSize);
+  const actual = rec.wins / rec.games;
+  const specific = actual - expected - globalMean - (offset[a] || 0) - (offset[b] || 0);
+  const noise = (expected * (1 - expected)) / rec.games;
+  const shrink = (tau * tau) / (tau * tau + noise); // 試合数が少ないほど0に寄せる
+  const bonus = (specific * shrink) / ((expected * (1 - expected) * Math.LN10) / 400);
+  return { games: rec.games, actual, expected: expected + globalMean + (offset[a] || 0) + (offset[b] || 0), bonus };
+}
+
+function synergyScoreForTeam(team, agg) {
   let score = 0;
   const notes = [];
   for (let i = 0; i < team.length; i++) {
     for (let j = i + 1; j < team.length; j++) {
-      const k = pairKey(team[i], team[j]);
-      const rec = teammateMap[k];
-      if (rec && rec.games >= 6) {
-        const wr = rec.wins / rec.games;
-        const weight = Math.min(rec.games, 40);
-        score += (wr - 0.5) * weight;
-        if (wr >= 0.68) notes.push({ pair: [team[i], team[j]], wr, games: rec.games, type: "good" });
-        if (wr <= 0.32) notes.push({ pair: [team[i], team[j]], wr, games: rec.games, type: "bad" });
+      const s = pairSynergy(team[i], team[j], agg);
+      if (!s) continue;
+      score += s.bonus;
+      if (Math.abs(s.bonus) >= SYNERGY_NOTE_MIN) {
+        notes.push({ pair: [team[i], team[j]], ...s, type: s.bonus > 0 ? "good" : "bad" });
       }
     }
   }
+  notes.sort((x, y) => Math.abs(y.bonus) - Math.abs(x.bonus));
   return { score, notes };
 }
 
-function suggestSplits(selected, players, teammateMap) {
+const splitKey = (teamA, teamB) => [[...teamA].sort().join(","), [...teamB].sort().join(",")].sort().join("/");
+
+// ratingOf: 各人のレート(直前の試合を踏まえる場合は今日の調子を足したもの)
+// previousMatches: 同じ日の試合。同じ組み合わせの案に印を付ける
+function suggestSplits(selected, agg, ratingOf, previousMatches = []) {
   if (selected.length < 2 || selected.length % 2 !== 0) return [];
   const half = selected.length / 2;
   const fixed = selected[0];
   const rest = selected.slice(1);
   const combosForFixedTeam = combinations(rest, half - 1);
-  const seen = new Set();
+  const played = new Set(previousMatches.map((m) => splitKey(m.teamA, m.teamB)));
   const splits = [];
   combosForFixedTeam.forEach((combo) => {
     const teamA = [fixed, ...combo].sort();
     const teamB = rest.filter((n) => !combo.includes(n)).sort();
-    const key = teamA.join(",") + "/" + teamB.join(",");
-    if (seen.has(key)) return;
-    seen.add(key);
-
-    const eloA = teamA.reduce((s, n) => s + (players[n]?.elo ?? BASE_ELO), 0) / teamA.length;
-    const eloB = teamB.reduce((s, n) => s + (players[n]?.elo ?? BASE_ELO), 0) / teamB.length;
-    const synA = synergyScoreForTeam(teamA, teammateMap);
-    const synB = synergyScoreForTeam(teamB, teammateMap);
-    const powerA = eloA + synA.score * 1.5;
-    const powerB = eloB + synB.score * 1.5;
-    const diff = Math.abs(powerA - powerB);
-
+    const eloA = teamA.reduce((s, n) => s + ratingOf(n), 0) / teamA.length;
+    const eloB = teamB.reduce((s, n) => s + ratingOf(n), 0) / teamB.length;
+    const synA = synergyScoreForTeam(teamA, agg);
+    const synB = synergyScoreForTeam(teamB, agg);
+    const edge = eloA + synA.score - (eloB + synB.score); // 正ならTeam Aが上
     splits.push({
-      teamA, teamB, eloA, eloB, diff,
-      synergyA: synA.score * 1.5, synergyB: synB.score * 1.5,
+      teamA, teamB, eloA, eloB, diff: Math.abs(edge),
+      winProbA: eloWinProb(edge),
+      synergyA: synA.score, synergyB: synB.score,
       notesA: synA.notes, notesB: synB.notes,
+      alreadyPlayed: played.has(splitKey(teamA, teamB)),
     });
   });
   splits.sort((a, b) => a.diff - b.diff);
   return splits.slice(0, 5);
+}
+
+/* ------------------------------------------------------------
+   直前の試合を踏まえた提案
+   同じ日の試合(最後の記録から12時間以内)の結果から「今日の調子」を出し、レートに一時的に足す。
+   予想より勝ったチームは上げ、負けたチームは下げる(Eloと同じ考え方で、Kを大きめにした一時的な補正)。
+   スコアが大差だった試合ほど強めに反映する。記録そのもの(通常のレート)には影響しない。
+   ------------------------------------------------------------ */
+const SESSION_GAP_MS = 12 * 60 * 60 * 1000;
+const SESSION_RECENT_MS = 24 * 60 * 60 * 1000;
+const SESSION_K = 40;
+
+function currentSession(matches) {
+  const recorded = matches.filter((m) => typeof m.id === "number" && (m.winner === "A" || m.winner === "B")).sort((a, b) => a.id - b.id);
+  if (!recorded.length) return [];
+  const last = recorded[recorded.length - 1].id;
+  return recorded.filter((m) => last - m.id <= SESSION_GAP_MS);
+}
+
+function teamScoreShareA(m) {
+  if (!m.scores) return null;
+  const total = (team) => team.reduce((s, n) => {
+    const x = m.scores[n];
+    return s + (x ? (x.military || 0) + (x.economy || 0) + (x.tech || 0) + (x.society || 0) : 0);
+  }, 0);
+  const a = total(m.teamA), b = total(m.teamB);
+  return a + b > 0 ? a / (a + b) : null;
+}
+
+function sessionForm(session, agg) {
+  const adj = {};
+  const log = [];
+  session.forEach((m) => {
+    const rating = (n) => (agg.players[n]?.elo ?? BASE_ELO) + (adj[n] || 0);
+    const avg = (t) => t.reduce((s, n) => s + rating(n), 0) / t.length;
+    const expectedA = eloWinProb(avg(m.teamA) - avg(m.teamB));
+    const actualA = m.winner === "A" ? 1 : 0;
+    const share = teamScoreShareA(m);
+    // スコア比 50:50 なら1倍、62.5:37.5 で1.5倍、75:25 以上で2倍
+    const factor = share === null ? 1 : 1 + Math.min(1, Math.abs(share - 0.5) * 4);
+    const delta = SESSION_K * factor * (actualA - expectedA);
+    m.teamA.forEach((n) => { if (ratingKey(n) !== AI_KEY) adj[n] = (adj[n] || 0) + delta; });
+    m.teamB.forEach((n) => { if (ratingKey(n) !== AI_KEY) adj[n] = (adj[n] || 0) - delta; });
+    log.push({ match: m, expectedA, share, factor, delta });
+  });
+  return { adj, log };
 }
 
 /* ============================================================
@@ -930,7 +1101,7 @@ function Leaderboard({ agg }) {
     <div>
       <div style={{ marginBottom: 18 }}>
         <h2 style={h2Style}>リーダーボード</h2>
-        <p style={subText}>レートは初期値(過去の戦績とChatGPT分析の評価)から、記録した試合結果に応じて自動更新されます。名前をクリックするとスコアの詳細(項目別平均・推移)が見られます。</p>
+        <p style={subText}>レートは、過去221戦の成績(個人・チームメイト・直接対決)と記録した試合結果から推定しています(ChatGPT分析の評価を補助的に使用。試合数が少ない人ほど評価寄り)。試合を記録するたびに計算し直されます。名前をクリックするとスコアの詳細(項目別平均・推移)が見られます。</p>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {rows.map((r, i) => {
@@ -1372,20 +1543,66 @@ function TeamPreview({ title, names, color, agg }) {
   );
 }
 
-function TeamBuilder({ agg }) {
+function TeamBuilder({ agg, matches }) {
   const [selected, setSelected] = useState([]);
   const roster = [...HUMAN_NAMES, ...AI_NAMES].filter((n) => (agg.players[n]?.games ?? 0) > 0 || CHATGPT_RATING[n] !== undefined);
+  const session = useMemo(() => currentSession(matches), [matches]);
+  const form = useMemo(() => sessionForm(session, agg), [session, agg]);
+  const sessionIsRecent = session.length > 0 && Date.now() - session[session.length - 1].id <= SESSION_RECENT_MS;
+  const [useSession, setUseSession] = useState(sessionIsRecent);
 
   const toggle = (n) => {
     setSelected((s) => (s.includes(n) ? s.filter((x) => x !== n) : [...s, n]));
   };
 
-  const splits = useMemo(() => suggestSplits(selected, agg.players, agg.teammate), [selected, agg]);
+  const ratingOf = (n) => (agg.players[n]?.elo ?? BASE_ELO) + (useSession ? form.adj[n] || 0 : 0);
+  const splits = useMemo(
+    () => suggestSplits(selected, agg, ratingOf, useSession ? session : []),
+    [selected, agg, useSession, session, form]
+  );
+  const lastMatch = session[session.length - 1];
+  const pct = (p) => `${Math.round(p * 100)}%`;
+  const signed = (v) => `${v > 0 ? "+" : v < 0 ? "−" : "±"}${Math.abs(Math.round(v))}`;
 
   return (
     <div>
       <h2 style={h2Style}>チーム分け提案</h2>
-      <p style={subText}>今日参加するメンバーを選んでください(偶数人数)。レート差が小さく、相性の悪い組み合わせが同じチームに固まらない案を上位から提案します。AI1〜5は強さがすべて同じものとして計算されます。</p>
+      <p style={subText}>今日参加するメンバーを選んでください(偶数人数)。レートと相性を合わせた実力差が小さい案を上位から提案します。AI1〜5は強さがすべて同じものとして計算されます。</p>
+
+      {session.length > 0 && (
+        <div style={{ ...cardStyle, marginTop: 16, borderColor: useSession ? "#c9a22766" : "#3a3128" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ fontFamily: "'Cinzel', serif", fontWeight: 700, fontSize: 13, color: "#c9a227" }}>
+              直前の試合を踏まえる(
+              {session[0].date && session[0].date !== lastMatch.date ? `${session[0].date}〜` : ""}
+              {lastMatch.date || "日付なし"}・{session.length}試合)
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Toggle label={useSession ? "反映中" : "反映しない"} active={useSession} onClick={() => setUseSession((v) => !v)} />
+              <Toggle label="前の試合のメンバーを選択" active={false} onClick={() => setSelected([...lastMatch.teamA, ...lastMatch.teamB])} />
+            </div>
+          </div>
+          <div style={{ marginTop: 8, fontSize: 12, color: "#a89a86", fontFamily: "'Inter', sans-serif", lineHeight: 1.7 }}>
+            {form.log.map(({ match: m, expectedA, share, delta }, i) => (
+              <div key={m.id}>
+                {i + 1}戦目: Team {m.winner} 勝利
+                (試合前の予想勝率 A {pct(expectedA)}{share !== null && ` / スコア比 ${Math.round(share * 100)}:${Math.round((1 - share) * 100)}`})
+                → 勝ったチーム {signed(Math.abs(delta))}、負けたチーム {signed(-Math.abs(delta))}
+              </div>
+            ))}
+            <div style={{ marginTop: 4, color: "#8b7a6b" }}>
+              今日の調子:{" "}
+              {Object.entries(form.adj)
+                .sort((a, b) => b[1] - a[1])
+                .map(([n, v]) => `${displayName(n)} ${signed(v)}`)
+                .join(" / ")}
+            </div>
+            <div style={{ marginTop: 4, fontSize: 11, color: "#665c4f" }}>
+              予想より勝ったチームのレートを一時的に上げ、負けたチームを下げて提案します(スコアが大差ほど強めに反映)。記録されるレートには影響しません。
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, margin: "16px 0 24px" }}>
         {roster.map((n) => (
@@ -1408,18 +1625,26 @@ function TeamBuilder({ agg }) {
         return (
         <div key={i} style={{ ...cardStyle, marginBottom: 12 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-            <span style={{ fontFamily: "'Cinzel', serif", fontWeight: 700, color: "#c9a227", fontSize: 14 }}>
-              案 {i + 1}
-            </span>
+            <div>
+              <span style={{ fontFamily: "'Cinzel', serif", fontWeight: 700, color: "#c9a227", fontSize: 14 }}>
+                案 {i + 1}
+              </span>
+              {s.alreadyPlayed && (
+                <span style={{ marginLeft: 8, fontSize: 11, color: "#c98a4b", fontFamily: "'Inter', sans-serif" }}>今日すでに対戦した組み合わせ</span>
+              )}
+            </div>
             <div
               style={{ textAlign: "right", fontFamily: "'JetBrains Mono', monospace" }}
-              title="実力 = 平均レート + 相性(6戦以上一緒に組んだペアの過去の勝率から計算。要注意・好相性に表示されない中間のペアも含む)。実力差が小さい順に提案しています。"
+              title="実力 = 平均レート + 相性。相性は、一緒に組んだときの勝率が2人のレートから予想される勝率よりどれだけ高いか(低いか)で、試合数が少ないほど0に寄せています。要注意・好相性に表示されない小さな補正も含みます。実力差が小さい順に提案しています。"
             >
               <div style={{ fontSize: 12, color: "#a89a86" }}>
                 実力差(相性込み) {Math.abs(totalEdge)}{totalEdge !== 0 && ` · Team ${totalEdge > 0 ? "A" : "B"}が上`}
               </div>
               <div style={{ fontSize: 10, color: "#665c4f", marginTop: 2 }}>
                 平均レート {edgeText(eloEdge)} / 相性 {edgeText(synergyEdge)}
+              </div>
+              <div style={{ fontSize: 10, color: "#665c4f", marginTop: 2 }}>
+                予想勝率 A {pct(s.winProbA)} : B {pct(1 - s.winProbA)}
               </div>
             </div>
           </div>
@@ -1453,7 +1678,8 @@ function SplitTeam({ title, names, elo, synergy, color, notes }) {
       ))}
       {notes.map((note, idx) => (
         <div key={idx} style={{ marginTop: 6, fontSize: 11, fontFamily: "'Inter', sans-serif", color: note.type === "good" ? "#8fa876" : "#c07a6f" }}>
-          {note.type === "good" ? "◎ 好相性" : "✕ 要注意"}: {displayName(note.pair[0])}×{displayName(note.pair[1])} ({(note.wr * 100).toFixed(0)}%, {note.games}戦)
+          {note.type === "good" ? "◎ 好相性" : "✕ 要注意"}: {displayName(note.pair[0])}×{displayName(note.pair[1])} {note.bonus > 0 ? "+" : "−"}{Math.abs(Math.round(note.bonus))}
+          ({note.games}戦 {(note.actual * 100).toFixed(0)}%、実力からの予想 {(note.expected * 100).toFixed(0)}%)
         </div>
       ))}
     </div>
@@ -1755,7 +1981,7 @@ function App() {
       {tab === "board" && <Leaderboard agg={agg} />}
       {tab === "add" && <AddMatch agg={agg} onSave={handleAddMatch} />}
       {tab === "history" && <MatchHistory matches={matches} onDelete={handleDeleteMatch} />}
-      {tab === "build" && <TeamBuilder agg={agg} />}
+      {tab === "build" && <TeamBuilder agg={agg} matches={matches} />}
       {tab === "synergy" && <Synergy agg={agg} />}
     </div>
   );
