@@ -1398,22 +1398,34 @@ function TeamBuilder({ agg }) {
         </div>
       )}
 
-      {splits.map((s, i) => (
+      {splits.map((s, i) => {
+        // 表示中の avg どうしの差と一致させるため、丸めた後の値で内訳を出す
+        const totalDiff = Math.round(s.diff);
+        const eloDiff = Math.abs(Math.round(s.eloA) - Math.round(s.eloB));
+        const synergyDiff = totalDiff - eloDiff; // 相性で差が広がれば+、縮まれば−
+        return (
         <div key={i} style={{ ...cardStyle, marginBottom: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
             <span style={{ fontFamily: "'Cinzel', serif", fontWeight: 700, color: "#c9a227", fontSize: 14 }}>
               案 {i + 1}
             </span>
-            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#8b7a6b" }}>
-              平均レート差 {Math.round(s.diff)}
-            </span>
+            <div
+              style={{ textAlign: "right", fontFamily: "'JetBrains Mono', monospace" }}
+              title="実力差 = 平均レートの差 + 相性(一緒に組んだときの過去の勝率)による補正。この値が小さい順に提案しています。"
+            >
+              <div style={{ fontSize: 12, color: "#a89a86" }}>実力差(相性込み) {totalDiff}</div>
+              <div style={{ fontSize: 10, color: "#665c4f", marginTop: 2 }}>
+                平均レート差 {eloDiff} / 相性による差 {synergyDiff > 0 ? "+" : synergyDiff < 0 ? "−" : "±"}{Math.abs(synergyDiff)}
+              </div>
+            </div>
           </div>
           <div style={{ display: "flex", gap: 20 }}>
             <SplitTeam title="Team A" names={s.teamA} elo={s.eloA} color="#8fa876" notes={s.notesA} />
             <SplitTeam title="Team B" names={s.teamB} elo={s.eloB} color="#c98a4b" notes={s.notesB} />
           </div>
         </div>
-      ))}
+        );
+      })}
 
       {selected.length >= 2 && selected.length % 2 === 0 && splits.length === 0 && (
         <div style={{ color: "#a89a86", fontSize: 13 }}>候補を計算中、またはメンバーが足りません。</div>
