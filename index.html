@@ -223,8 +223,11 @@ function splitOcrLine(line) {
 // OCRテキストを解析する。Googleドライブ経由のOCRは表組みを「名前の行→数値が1個ずつ並ぶ行」の
 // ように1列にバラして返すことが多いため、行を先頭から走査し、
 // ロスター名の行を見つけたら同じ行・続く行の数値を最大5個(軍事/経済/テクノロジー/社会/総合)拾う方式にしている。
-// 5個目の総合が4項目の合計と一致しない場合や、表が列ごとに出力されたと思われる場合は warnings に積み、
-// 推測で埋めずに手動確認を促す。あくまで下書き用。保存前に必ず確認・修正が必要。
+// ただし実際のスコアボードでは、途中から「名前が数人分まとめて並び、その後に数値が行順で5個ずつ続く」形で
+// 出力されることがある(2026/9 に他人のスコアが入る・空欄になる不具合の原因だった)。その場合は
+// 5個ずつに区切り、全員分「4項目の合計=総合」が成り立つときだけ行順に割り当てる。
+// 合計が合わないなど確信が持てないものは warnings に積み、推測で埋めずに手動確認を促す。あくまで下書き用。
+// 戻り値の order は画面上の行順(=名前が現れた順)で、画像からのチーム・勝者判定に使う。
 // trace に配列を渡すと、各行をどう解釈したか(名前/数値/無視/スキップ)を記録する(OCRデバッグログ用)。
 function parseScoresFromOcrText(text, trace) {
   const log = (e) => { if (trace) trace.push(e); };
@@ -234,9 +237,46 @@ function parseScoresFromOcrText(text, trace) {
     .filter(Boolean);
   const players = [];
   const warnings = [];
+  const order = [];
   const emptyNames = [];
   const columnLayoutNames = new Set();
-  let emptyRun = 0; // 数値が1つも付かなかった名前が連続した数
+  const sumOk = (nums) => nums.length === 5 && nums[0] + nums[1] + nums[2] + nums[3] === nums[4];
+
+  // start 行目から数値を need 個まで集める。名前の行に当たったら止まる
+  const collect = (start, need, forName) => {
+    const nums = [];
+    const used = [];
+    let j = start;
+    while (j < lines.length && nums.length < need) {
+      const { nums: lineNums, namePart } = splitOcrLine(lines[j]);
+      if (!namePart && lineNums.length) {
+        used.push({ line: j, text: lines[j], as: "number", for: forName });
+        nums.push(...lineNums.slice(0, need - nums.length));
+      } else if (namePart && matchToRosterName(namePart)) {
+        break; // 次のプレイヤー行に到達したので打ち切り
+      } else {
+        used.push({ line: j, text: lines[j], as: "skipped", for: forName }); // アイコンの誤読などのゴミ行はスキップ
+      }
+      j++;
+    }
+    return { nums, next: j, used };
+  };
+
+  const addPlayer = (rn, nums) => {
+    if (players.some((p) => p.name === rn)) {
+      log({ as: "duplicate_ignored", name: rn, nums });
+      warnings.push(`${displayName(rn)} が2回読み取られたため、2回目は無視しました。`);
+      return;
+    }
+    const [military = 0, economy = 0, tech = 0, society = 0] = nums;
+    let warning = null;
+    if (nums.length < 5) warning = `数値が${nums.length}個しか読み取れませんでした(5個必要)。項目がずれている可能性があります。`;
+    else if (!sumOk(nums)) warning = `4項目の合計(${military + economy + tech + society})が総合(${nums[4]})と一致しません。`;
+    if (warning) warnings.push(`${displayName(rn)}: ${warning}`);
+    players.push({ name: rn, military, economy, tech, society, rawNums: nums, warning });
+  };
+
+  let pending = []; // 直前に続いた「数値が付かなかった名前」
   let i = 0;
   while (i < lines.length) {
     const head = splitOcrLine(lines[i]);
@@ -247,57 +287,267 @@ function parseScoresFromOcrText(text, trace) {
       continue;
     }
     const rn = m.name;
+    if (!order.includes(rn)) order.push(rn);
     log({ line: i, text: lines[i], as: "name", name: rn, method: m.method, dist: m.dist, sameLineNums: head.nums.length || undefined });
-    const nums = head.nums.slice(0, 5);
-    let j = i + 1;
-    while (j < lines.length && nums.length < 5) {
-      const { nums: lineNums, namePart } = splitOcrLine(lines[j]);
-      if (!namePart && lineNums.length) {
-        log({ line: j, text: lines[j], as: "number", for: rn });
-        nums.push(...lineNums.slice(0, 5 - nums.length));
-        j++;
-      } else if (namePart && matchToRosterName(namePart)) {
-        break; // 次のプレイヤー行に到達したので打ち切り
-      } else {
-        log({ line: j, text: lines[j], as: "skipped", for: rn });
-        j++; // アイコンの誤読などのゴミ行はスキップ
-      }
-    }
-    i = j > i ? j : i + 1;
+    const headNums = head.nums.slice(0, 5);
+    const first = collect(i + 1, 5 - headNums.length, rn);
+    const nums = headNums.concat(first.nums);
 
     if (nums.length === 0) {
       log({ line: i, as: "name_without_numbers", name: rn });
-      emptyNames.push(rn);
-      emptyRun++;
+      first.used.forEach(log);
+      pending.push(rn);
+      i = first.next;
       continue;
     }
-    if (emptyRun >= 2) {
-      // 名前がまとめて並んだ後に数値が続く=表が列ごとに出力された形。この数値は他の人の分の可能性が高いので採用しない
-      log({ as: "discarded_column_layout", name: rn, nums });
-      const group = [...emptyNames.slice(-emptyRun), rn];
-      group.forEach((n) => columnLayoutNames.add(n));
-      warnings.push(`名前と数値が別々にまとめて読み取られたため、${group.map(displayName).join("・")} のスコアは自動入力していません。`);
-      emptyRun = 0;
-      continue;
+
+    if (pending.length) {
+      const group = [...pending, rn];
+      const more = collect(first.next, 5 * group.length - nums.length, rn);
+      const all = nums.concat(more.nums);
+      const chunks = group.map((_, k) => all.slice(k * 5, k * 5 + 5));
+      if (all.length === 5 * group.length && chunks.every(sumOk)) {
+        log({ as: "grouped_row_major", names: group });
+        first.used.concat(more.used).forEach(log);
+        group.forEach((n, k) => addPlayer(n, chunks[k]));
+        pending = [];
+        i = more.next;
+        continue;
+      }
+      if (pending.length >= 2) {
+        // 名前がまとめて並んだのに合計チェックが通らない=並び順が読めない。他人の数値の可能性が高いので採用しない
+        log({ as: "discarded_column_layout", names: group, nums: all });
+        group.forEach((n) => columnLayoutNames.add(n));
+        warnings.push(`名前と数値が別々にまとめて読み取られ、並び順を確認できなかったため、${group.map(displayName).join("・")} のスコアは自動入力していません。`);
+        pending = [];
+        i = first.next;
+        continue;
+      }
+      emptyNames.push(...pending);
+      pending = [];
     }
-    emptyRun = 0;
-    if (players.some((p) => p.name === rn)) {
-      log({ as: "duplicate_ignored", name: rn, nums });
-      warnings.push(`${displayName(rn)} が2回読み取られたため、2回目は無視しました。`);
-      continue;
-    }
-    const [military = 0, economy = 0, tech = 0, society = 0] = nums;
-    let warning = null;
-    if (nums.length < 5) warning = `数値が${nums.length}個しか読み取れませんでした(5個必要)。項目がずれている可能性があります。`;
-    else if (military + economy + tech + society !== nums[4]) warning = `4項目の合計(${military + economy + tech + society})が総合(${nums[4]})と一致しません。`;
-    if (warning) warnings.push(`${displayName(rn)}: ${warning}`);
-    players.push({ name: rn, military, economy, tech, society, rawNums: nums, warning });
+    first.used.forEach(log);
+    addPlayer(rn, nums);
+    i = first.next;
   }
+  emptyNames.push(...pending);
   const onlyEmpty = [...new Set(emptyNames)].filter((n) => !columnLayoutNames.has(n) && !players.some((p) => p.name === n));
   if (onlyEmpty.length) {
     warnings.push(`${onlyEmpty.map(displayName).join("・")} は名前は見つかりましたが数値を読み取れませんでした。`);
   }
-  return { players, warnings };
+  return { players, warnings, order };
+}
+
+/* ------------------------------------------------------------
+   スコアボード画像のピクセル解析(チーム分け・勝者の判定)
+   OCRの文字には盾の中のチーム番号や王冠マークが出てこないため、画像そのものを見て判定する。
+   ・行: 左端のアイコン枠(暗い画素)が縦に並ぶ位置
+   ・勝者: 名前の旗の右側にある王冠(くすんだ金色の画素)の量。旗の長さで位置がずれるので幅を持たせている
+   ・チーム: 右端の盾。チーム番号ごとに形・色が違う(1=赤い雫型、2=白赤の盾など)ので、
+     盾を6x8マスの模様に要約し、似ている行同士を同じチームとみなす(番号自体は読まない)
+   2026/9 時点の AoE2 DE の結果画面(スコアタブ)を、スコア表の部分だけ切り抜いた画像で調整している。
+   ------------------------------------------------------------ */
+const CROWN_THRESHOLD = 0.06; // 王冠あり: 0.14〜0.18 / なし: 0.01以下(行間隔の2乗あたりの画素数)
+const SHIELD_SAME_TEAM_MAX_DIFF = 12; // 48マス中の違うマス数。同じチーム: 0〜3 / 別チーム: 30前後
+
+function loadImageData(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      resolve(ctx.getImageData(0, 0, canvas.width, canvas.height));
+    };
+    img.onerror = () => reject(new Error("画像を読み込めませんでした"));
+    img.src = dataUrl;
+  });
+}
+
+function analyzeScoreboardImage(imageData) {
+  const { width: W, height: H, data } = imageData;
+  const px = (x, y) => {
+    const o = (y * W + x) * 4;
+    return [data[o], data[o + 1], data[o + 2]];
+  };
+  const isDark = (p) => p[0] + p[1] + p[2] < 200;
+  const dist = (p, q) => Math.abs(p[0] - q[0]) + Math.abs(p[1] - q[1]) + Math.abs(p[2] - q[2]);
+
+  // 画像の縁取りや余白など、縦に長く続く暗い列は行の検出から除外する
+  const border = new Set();
+  let stripStart = null;
+  for (let x = 0; x < Math.round(W * 0.2); x++) {
+    let n = 0;
+    for (let y = 0; y < H; y++) if (isDark(px(x, y))) n++;
+    if (n > 0.7 * H) border.add(x);
+    else if (stripStart === null && n > 0.25 * H) stripStart = x; // 左端のアイコン枠が始まる列
+  }
+  if (stripStart === null) return { rows: [], error: "行を検出できませんでした" };
+  const stripEnd = Math.min(W, stripStart + Math.max(4, Math.round(W * 0.025)));
+  // 見出しの下などの横線
+  const hline = new Set();
+  for (let y = 0; y < H; y++) {
+    let n = 0, total = 0;
+    for (let x = 0; x < W; x += 4) {
+      total++;
+      const p = px(x, y);
+      if (p[0] + p[1] + p[2] < 400) n++;
+    }
+    if (n > 0.5 * total) hline.add(y);
+  }
+
+  const runs = [];
+  let start = null, end = null, gap = 0;
+  for (let y = 0; y < H; y++) {
+    let n = 0;
+    if (!hline.has(y)) for (let x = stripStart; x < stripEnd; x++) if (!border.has(x) && isDark(px(x, y))) n++;
+    if (n >= 2) { // 明るい色の紋章だと、枠の左右の線の2画素しか暗くならない行がある
+      if (start === null) start = y;
+      end = y;
+      gap = 0;
+    } else if (start !== null && ++gap > 3) {
+      runs.push([start, end]);
+      start = null;
+    }
+  }
+  if (start !== null) runs.push([start, end]);
+  if (runs.length < 2) return { rows: [], error: "行を検出できませんでした" };
+  const lens = runs.map(([s, e]) => e - s).sort((a, b) => a - b);
+  const medLen = lens[Math.floor(lens.length / 2)];
+  const rowRanges = runs.filter(([s, e]) => e - s >= 0.5 * medLen);
+  if (rowRanges.length < 2) return { rows: [], error: "行を検出できませんでした" };
+  const pitches = rowRanges.slice(1).map((r, k) => r[0] - rowRanges[k][0]).sort((a, b) => a - b);
+  const pitch = pitches[Math.floor((pitches.length - 1) / 2)];
+
+  const rows = rowRanges.map(([s, e]) => {
+    const ym = Math.round((s + e) / 2);
+    // 行の背景色(総合得点の列と盾の列の間の何もない所)
+    const samples = [0.83, 0.84, 0.85, 0.86].map((f) => px(Math.min(W - 1, Math.round(W * f)), ym));
+    const bg = [0, 1, 2].map((c) => samples.map((p) => p[c]).sort((a, b) => a - b)[2]);
+
+    let left = 0;
+    while (left < W && (border.has(left) || !isDark(px(left, ym)))) left++;
+
+    // 王冠: 旗の右側。鮮やかな黄・橙(旗そのものの色)は除外し、くすんだ金色だけ数える
+    const x0 = Math.min(W, left + Math.round(3.8 * pitch));
+    const x1 = Math.min(W, left + Math.round(5.8 * pitch));
+    let crownPx = 0;
+    for (let x = x0; x < x1; x++) {
+      for (let y = s; y <= e; y++) {
+        const p = px(x, y);
+        const [r, g, b] = p;
+        if (dist(p, bg) < 45 || (r > 200 && b < 80)) continue;
+        if (r >= g && g >= b && r - b >= 50 && g >= 0.55 * r) crownPx++;
+      }
+    }
+    const crown = crownPx / (pitch * pitch);
+
+    // 盾: 右端の領域で、背景と違う画素が集まった一番大きな塊。
+    // 画像の縁取りや余白のように行の高さいっぱいに続く列は除外する
+    const xStart = Math.round(W * 0.86);
+    const colCount = [];
+    for (let x = xStart; x < W; x++) {
+      let n = 0, total = 0;
+      for (let y = s; y <= e; y++) {
+        if (hline.has(y)) continue;
+        total++;
+        if (dist(px(x, y), bg) >= 60) n++;
+      }
+      colCount.push(n >= 2 && n < 0.9 * total ? n : 0);
+    }
+    // 白赤に塗り分けた盾は中央で途切れて見えることがあるので、近い塊はつなげる
+    const maxGap = Math.max(2, Math.round(pitch * 0.3));
+    let best = null, cur = null;
+    colCount.forEach((n, k) => {
+      if (n > 0) {
+        if (!cur || k - cur.end > maxGap) cur = { start: k, end: k, sum: 0 };
+        cur.end = k;
+        cur.sum += n;
+        if (!best || cur.sum > best.sum) best = { ...cur };
+      }
+    });
+    let bx0 = W, bx1 = -1, by0 = H, by1 = -1;
+    if (best) {
+      bx0 = xStart + best.start;
+      bx1 = xStart + best.end;
+      for (let x = bx0; x <= bx1; x++) {
+        for (let y = s; y <= e; y++) {
+          if (hline.has(y) || dist(px(x, y), bg) < 60) continue;
+          by0 = Math.min(by0, y); by1 = Math.max(by1, y);
+        }
+      }
+    }
+    let shield = null;
+    if (bx1 >= 0 && bx1 - bx0 >= 5 && by1 - by0 >= 5) {
+      const GX = 6, GY = 8;
+      shield = "";
+      for (let gy = 0; gy < GY; gy++) {
+        for (let gx = 0; gx < GX; gx++) {
+          const cx0 = bx0 + Math.floor(((bx1 - bx0 + 1) * gx) / GX);
+          const cx1 = Math.max(cx0 + 1, bx0 + Math.floor(((bx1 - bx0 + 1) * (gx + 1)) / GX));
+          const cy0 = by0 + Math.floor(((by1 - by0 + 1) * gy) / GY);
+          const cy1 = Math.max(cy0 + 1, by0 + Math.floor(((by1 - by0 + 1) * (gy + 1)) / GY));
+          const cls = { b: 0, l: 0, r: 0, d: 0 }; // 背景/白系/色つき/黒系
+          for (let x = cx0; x < cx1; x++) {
+            for (let y = cy0; y < cy1; y++) {
+              const p = px(x, y);
+              if (dist(p, bg) < 60) cls.b++;
+              else if (p[0] + p[1] + p[2] < 180) cls.d++;
+              else if (Math.max(...p) - Math.min(...p) < 50) cls.l++;
+              else cls.r++;
+            }
+          }
+          shield += Object.keys(cls).reduce((a, k) => (cls[k] > cls[a] ? k : a), "b");
+        }
+      }
+    }
+    return { top: s, bottom: e, crown: Math.round(crown * 1000) / 1000, shield, shieldBox: shield ? [bx0, by0, bx1, by1] : null };
+  });
+  return { rows, pitch };
+}
+
+// OCRで分かった行順の名前と、画像解析の結果から、チーム分けと勝者を推定する。
+// 確信が持てないときは teamA/teamB/winner を null のまま返し、理由を warnings に入れる。
+function inferTeamsAndWinner(order, analysis) {
+  const result = { teamA: null, teamB: null, winner: null, warnings: [] };
+  const rows = (analysis && analysis.rows) || [];
+  if (analysis && analysis.error) {
+    result.warnings.push(`チーム分け・勝者を判定できませんでした(${analysis.error})。スコア表の部分だけを切り抜いた画像だと判定しやすくなります。`);
+    return result;
+  }
+  if (rows.length !== order.length) {
+    result.warnings.push(`チーム分け・勝者を判定できませんでした(画像の行数 ${rows.length} と読み取れた名前の数 ${order.length} が一致しません)。`);
+    return result;
+  }
+  if (rows.some((r) => !r.shield)) {
+    result.warnings.push("チーム分けを判定できませんでした(チームの盾マークが見つかりません)。");
+    return result;
+  }
+  const diff = (a, b) => [...a].filter((c, k) => c !== b[k]).length;
+  const clusters = []; // { sig, idx: [] }
+  rows.forEach((r, k) => {
+    const c = clusters.find((cl) => diff(cl.sig, r.shield) <= SHIELD_SAME_TEAM_MAX_DIFF);
+    if (c) c.idx.push(k);
+    else clusters.push({ sig: r.shield, idx: [k] });
+  });
+  if (clusters.length !== 2) {
+    result.warnings.push(`チーム分けを判定できませんでした(盾マークが${clusters.length}種類に分かれました。2チーム戦のみ対応しています)。`);
+    return result;
+  }
+  // 画像の一番上の人のチームを Team A にする
+  const [a, b] = clusters;
+  result.teamA = a.idx.map((k) => order[k]);
+  result.teamB = b.idx.map((k) => order[k]);
+
+  const crowned = rows.map((r) => r.crown >= CROWN_THRESHOLD);
+  const allCrowned = (cl) => cl.idx.every((k) => crowned[k]);
+  const noneCrowned = (cl) => cl.idx.every((k) => !crowned[k]);
+  if (allCrowned(a) && noneCrowned(b)) result.winner = "A";
+  else if (allCrowned(b) && noneCrowned(a)) result.winner = "B";
+  else result.warnings.push("勝者を判定できませんでした(王冠マークがどちらか一方のチーム全員に付いていません)。");
+  return result;
 }
 
 function fileToBase64(file) {
@@ -777,6 +1027,7 @@ function AddMatch({ agg, onSave }) {
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState(null);
   const [ocrWarnings, setOcrWarnings] = useState([]);
+  const [ocrInfo, setOcrInfo] = useState("");
   const [ocrDebugText, setOcrDebugText] = useState("");
   const [ocrLogMessage, setOcrLogMessage] = useState("");
   // 前回保存以降のOCR実行のログID。保存時に最終スコアと修正差分を書き足す。
@@ -806,6 +1057,7 @@ function AddMatch({ agg, onSave }) {
     setExtracting(true);
     setExtractError(null);
     setOcrWarnings([]);
+    setOcrInfo("");
     setOcrDebugText("");
     const logEntry = {
       id: Date.now(),
@@ -827,12 +1079,37 @@ function AddMatch({ agg, onSave }) {
       const text = await ocrExtractText(base64, file.type || "image/png");
       logEntry.rawText = text;
       console.log("OCR raw text:\n" + text);
-      const { players: found, warnings } = parseScoresFromOcrText(text, logEntry.trace);
+      const { players: found, warnings, order } = parseScoresFromOcrText(text, logEntry.trace);
       logEntry.parsed = found;
-      logEntry.warnings = warnings;
+      logEntry.order = order;
       console.log("OCR parse trace:", logEntry.trace);
-      setOcrWarnings(warnings);
-      if (warnings.length) setOcrDebugText(text);
+
+      // チーム分け・勝者は画像のピクセルから判定する(失敗してもスコアの自動入力は続ける)
+      let inference = null;
+      try {
+        const analysis = analyzeScoreboardImage(await loadImageData(logEntry.imageDataUrl));
+        logEntry.imageAnalysis = analysis;
+        inference = inferTeamsAndWinner(order, analysis);
+      } catch (e) {
+        inference = { teamA: null, teamB: null, winner: null, warnings: [`チーム分け・勝者の判定中にエラーが発生しました: ${e && e.message ? e.message : e}`] };
+      }
+      logEntry.teamInference = inference;
+      console.log("画像からのチーム・勝者判定:", logEntry.imageAnalysis, inference);
+      if (inference.teamA && inference.teamB) {
+        setTeamA(inference.teamA);
+        setTeamB(inference.teamB);
+        setWinner(inference.winner);
+      }
+      setOcrInfo(
+        inference.teamA
+          ? `チーム分け${inference.winner ? "・勝者" : ""}を画像から自動入力しました。下で確認してください。`
+          : ""
+      );
+
+      const allWarnings = [...warnings, ...inference.warnings];
+      logEntry.warnings = allWarnings;
+      setOcrWarnings(allWarnings);
+      if (allWarnings.length) setOcrDebugText(text);
 
       if (found.length === 0) {
         setExtractError("スコアを読み取れませんでした。手動で入力してください。下に読み取った生テキストを表示しています。");
@@ -906,6 +1183,11 @@ function AddMatch({ agg, onSave }) {
         scoresAtSave, // 保存直前の入力欄の状態(チーム外の人の値も含む)
         finalScores: cleanScores,
         corrections: diffScores(entry && entry.scoresAfterOcr, cleanScores),
+        // 画像から推定したチーム・勝者と、実際に保存した内容が違ったか
+        teamCorrected: !!(entry && entry.teamInference && entry.teamInference.teamA) &&
+          (JSON.stringify([...entry.teamInference.teamA].sort()) !== JSON.stringify([...teamA].sort()) ||
+            JSON.stringify([...entry.teamInference.teamB].sort()) !== JSON.stringify([...teamB].sort())),
+        winnerCorrected: !!(entry && entry.teamInference && entry.teamInference.winner) && entry.teamInference.winner !== winner,
       });
     });
     onSave({ id: matchId, date, map, teamA, teamB, winner, notes: notes || undefined, scores: cleanScores });
@@ -945,6 +1227,7 @@ function AddMatch({ agg, onSave }) {
             {ocrDebugText}
           </pre>
         )}
+        {ocrInfo && <div style={{ marginTop: 8, fontSize: 12, color: "#8fa876", fontFamily: "'Inter', sans-serif" }}>✓ {ocrInfo}</div>}
         {ocrWarnings.length > 0 && (
           <div style={{ marginTop: 8, fontSize: 12, color: "#c98a4b", fontFamily: "'Inter', sans-serif", lineHeight: 1.6 }}>
             ⚠ 要確認(画像と見比べて手で直してください):
@@ -952,7 +1235,7 @@ function AddMatch({ agg, onSave }) {
           </div>
         )}
         <div style={{ marginTop: 8, fontSize: 11, color: "#665c4f", fontFamily: "'Inter', sans-serif" }}>
-          OCR(文字読み取り)による下書きです。チーム分け・勝者は自動判定されません。読み取り結果は下のスコア欄に反映されるので、保存前に必ず内容を確認・修正してください。
+          画像からの読み取りによる下書きです。スコア・チーム分け・勝者(王冠マーク)を自動入力しますが、誤読することもあるので、保存前に必ず内容を確認・修正してください。
         </div>
         <div style={{ marginTop: 6, fontSize: 11, color: "#665c4f", fontFamily: "'Inter', sans-serif" }}>
           読み取りがおかしかったときは{" "}
