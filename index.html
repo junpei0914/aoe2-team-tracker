@@ -364,120 +364,111 @@ function splitOcrLine(line) {
   return { nums, namePart: rest.join(" ") };
 }
 
-// OCRテキストを解析する。Googleドライブ経由のOCRは表組みを「名前の行→数値が1個ずつ並ぶ行」の
-// ように1列にバラして返すことが多いため、行を先頭から走査し、
-// ロスター名の行を見つけたら同じ行・続く行の数値を最大5個(軍事/経済/テクノロジー/社会/総合)拾う方式にしている。
-// ただし実際のスコアボードでは、途中から「名前が数人分まとめて並び、その後に数値が行順で5個ずつ続く」形で
-// 出力されることがある(2026/9 に他人のスコアが入る・空欄になる不具合の原因だった)。その場合は
-// 5個ずつに区切り、全員分「4項目の合計=総合」が成り立つときだけ行順に割り当てる。
-// 合計が合わないなど確信が持てないものは warnings に積み、推測で埋めずに手動確認を促す。あくまで下書き用。
-// 戻り値の order は画面上の行順(=名前が現れた順)で、画像からのチーム・勝者判定に使う。
-// trace に配列を渡すと、各行をどう解釈したか(名前/数値/無視/スキップ)を記録する(OCRデバッグログ用)。
+// 見出し・凡例の文言。名前の候補から除外する
+const OCR_HEADER_WORDS = [
+  "プレイヤー", "軍事", "経済", "經濟", "テクノロジー", "社会", "社會", "総合得点", "総合", "得点",
+  "チーム", "チー", "最高得点", "勝者", "最優秀プレイヤー", "player", "military", "economy", "technology", "society", "team",
+];
+function isOcrHeaderLine(text) {
+  const t = (text || "").replace(/[\s☆★・、。「」|]/g, "");
+  if (t.length < 2) return true;
+  const lower = t.toLowerCase();
+  return OCR_HEADER_WORDS.some((w) => lower.includes(w.toLowerCase()));
+}
+
+// OCRテキストを解析する。Googleドライブ経由のOCRは表組みを1列にバラして返すため、
+// 「名前→その人の数値5個」の順に並ぶこともあれば、「名前が数人分まとめて並び、そのあとに
+// 数値が行順で5個ずつ続く」形になることもある。そこで、
+//   1. 数値をすべて拾って5個(軍事/経済/テクノロジー/社会/総合)ずつのブロックに区切る
+//      (「4項目の合計=総合」が成り立つかで区切り位置を検証する)
+//   2. 名前(ロスターにない名前=AIなども含む)を出現順に並べ、ブロックへ順番に割り当てる
+// という方式にしている。AIは名前が毎回変わるためロスターに一致しないが、1行として数えないと
+// それ以降のスコアが1人ずつずれてしまう(2026/9/22 の不具合)。そのためロスターにない名前も
+// 「不明なプレイヤー」として行に数え、スコアは自動入力しない。
+// 確信が持てないものは warnings に積み、推測で埋めずに手動確認を促す。あくまで下書き用。
+// 戻り値の order は画面上の行順(ロスターにない行は null)で、画像からのチーム・勝者判定に使う。
+// trace に配列を渡すと、各行・各ブロックをどう解釈したかを記録する(OCRデバッグログ用)。
+const OCR_BLOCK_SIZE = 5;
+const OCR_MAX_SKIP = 2; // 合計が合わないとき、ゴミ数値とみなして読み飛ばす最大個数
+
 function parseScoresFromOcrText(text, trace) {
   const log = (e) => { if (trace) trace.push(e); };
   const lines = text
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean);
-  const players = [];
   const warnings = [];
-  const order = [];
-  const emptyNames = [];
-  const columnLayoutNames = new Set();
-  const sumOk = (nums) => nums.length === 5 && nums[0] + nums[1] + nums[2] + nums[3] === nums[4];
+  const sumOk = (v) => v.length === OCR_BLOCK_SIZE && v[0] + v[1] + v[2] + v[3] === v[4];
 
-  // start 行目から数値を need 個まで集める。名前の行に当たったら止まる
-  const collect = (start, need, forName) => {
-    const nums = [];
-    const used = [];
-    let j = start;
-    while (j < lines.length && nums.length < need) {
-      const { nums: lineNums, namePart } = splitOcrLine(lines[j]);
-      if (!namePart && lineNums.length) {
-        used.push({ line: j, text: lines[j], as: "number", for: forName });
-        nums.push(...lineNums.slice(0, need - nums.length));
-      } else if (namePart && matchToRosterName(namePart)) {
-        break; // 次のプレイヤー行に到達したので打ち切り
+  // 1. 行を「名前」と「数値」に振り分ける
+  const nameItems = [];
+  const numItems = [];
+  lines.forEach((line, i) => {
+    const { nums, namePart } = splitOcrLine(line);
+    if (namePart) {
+      const m = matchToRosterNameDetailed(namePart);
+      if (m) {
+        nameItems.push({ line: i, name: m.name });
+        log({ line: i, text: line, as: "name", name: m.name, method: m.method, dist: m.dist });
+      } else if (isOcrHeaderLine(namePart)) {
+        log({ line: i, text: line, as: "ignored" });
       } else {
-        used.push({ line: j, text: lines[j], as: "skipped", for: forName }); // アイコンの誤読などのゴミ行はスキップ
+        nameItems.push({ line: i, name: null, text: namePart });
+        log({ line: i, text: line, as: "unknown_name" });
       }
-      j++;
     }
-    return { nums, next: j, used };
-  };
+    nums.forEach((v) => numItems.push({ line: i, v }));
+    if (nums.length) log({ line: i, text: line, as: "number", count: nums.length });
+  });
 
-  const addPlayer = (rn, nums) => {
-    if (players.some((p) => p.name === rn)) {
-      log({ as: "duplicate_ignored", name: rn, nums });
-      warnings.push(`${displayName(rn)} が2回読み取られたため、2回目は無視しました。`);
+  // 2. 数値を5個ずつのブロックに区切る
+  const blocks = [];
+  let i = 0;
+  while (i + OCR_BLOCK_SIZE <= numItems.length) {
+    let skip = 0;
+    for (; skip <= OCR_MAX_SKIP; skip++) {
+      if (i + skip + OCR_BLOCK_SIZE > numItems.length) break;
+      if (sumOk(numItems.slice(i + skip, i + skip + OCR_BLOCK_SIZE).map((x) => x.v))) break;
+    }
+    const start = skip > OCR_MAX_SKIP || i + skip + OCR_BLOCK_SIZE > numItems.length ? i : i + skip;
+    const values = numItems.slice(start, start + OCR_BLOCK_SIZE).map((x) => x.v);
+    if (start > i) log({ as: "skipped_numbers", values: numItems.slice(i, start).map((x) => x.v) });
+    blocks.push({ values, line: numItems[start].line, ok: sumOk(values) });
+    i = start + OCR_BLOCK_SIZE;
+  }
+  if (numItems.length - i > 0) log({ as: "leftover_numbers", count: numItems.length - i });
+
+  // 3. 名前をブロックへ順番に割り当てる
+  const players = [];
+  const order = [];
+  let unknownRows = 0;
+  blocks.forEach((b, k) => {
+    const item = nameItems[k];
+    if (!item || item.name === null) {
+      order.push(null);
+      unknownRows++;
+      log({ as: "unknown_row", block: k, text: item ? item.text : null, values: b.values });
       return;
     }
-    const [military = 0, economy = 0, tech = 0, society = 0] = nums;
-    let warning = null;
-    if (nums.length < 5) warning = `数値が${nums.length}個しか読み取れませんでした(5個必要)。項目がずれている可能性があります。`;
-    else if (!sumOk(nums)) warning = `4項目の合計(${military + economy + tech + society})が総合(${nums[4]})と一致しません。`;
-    if (warning) warnings.push(`${displayName(rn)}: ${warning}`);
-    players.push({ name: rn, military, economy, tech, society, rawNums: nums, warning });
-  };
-
-  let pending = []; // 直前に続いた「数値が付かなかった名前」
-  let i = 0;
-  while (i < lines.length) {
-    const head = splitOcrLine(lines[i]);
-    const m = head.namePart ? matchToRosterNameDetailed(head.namePart) : null;
-    if (!m) {
-      log({ line: i, text: lines[i], as: "ignored" });
-      i++;
-      continue;
+    if (players.some((p) => p.name === item.name)) {
+      order.push(null);
+      log({ as: "duplicate_ignored", name: item.name, values: b.values });
+      warnings.push(`${displayName(item.name)} が2回読み取られたため、2回目は無視しました。`);
+      return;
     }
-    const rn = m.name;
-    if (!order.includes(rn)) order.push(rn);
-    log({ line: i, text: lines[i], as: "name", name: rn, method: m.method, dist: m.dist, sameLineNums: head.nums.length || undefined });
-    const headNums = head.nums.slice(0, 5);
-    const first = collect(i + 1, 5 - headNums.length, rn);
-    const nums = headNums.concat(first.nums);
+    const [military, economy, tech, society] = b.values;
+    const warning = b.ok ? null : `4項目の合計(${military + economy + tech + society})が総合(${b.values[4]})と一致しません。`;
+    if (warning) warnings.push(`${displayName(item.name)}: ${warning}`);
+    order.push(item.name);
+    players.push({ name: item.name, military, economy, tech, society, rawNums: b.values, warning });
+  });
 
-    if (nums.length === 0) {
-      log({ line: i, as: "name_without_numbers", name: rn });
-      first.used.forEach(log);
-      pending.push(rn);
-      i = first.next;
-      continue;
-    }
-
-    if (pending.length) {
-      const group = [...pending, rn];
-      const more = collect(first.next, 5 * group.length - nums.length, rn);
-      const all = nums.concat(more.nums);
-      const chunks = group.map((_, k) => all.slice(k * 5, k * 5 + 5));
-      if (all.length === 5 * group.length && chunks.every(sumOk)) {
-        log({ as: "grouped_row_major", names: group });
-        first.used.concat(more.used).forEach(log);
-        group.forEach((n, k) => addPlayer(n, chunks[k]));
-        pending = [];
-        i = more.next;
-        continue;
-      }
-      if (pending.length >= 2) {
-        // 名前がまとめて並んだのに合計チェックが通らない=並び順が読めない。他人の数値の可能性が高いので採用しない
-        log({ as: "discarded_column_layout", names: group, nums: all });
-        group.forEach((n) => columnLayoutNames.add(n));
-        warnings.push(`名前と数値が別々にまとめて読み取られ、並び順を確認できなかったため、${group.map(displayName).join("・")} のスコアは自動入力していません。`);
-        pending = [];
-        i = first.next;
-        continue;
-      }
-      emptyNames.push(...pending);
-      pending = [];
-    }
-    first.used.forEach(log);
-    addPlayer(rn, nums);
-    i = first.next;
+  if (unknownRows > 0) {
+    warnings.push(`名簿にない名前の行が${unknownRows}行ありました(AIなど)。行数には数えていますが、スコアは自動入力していません。`);
   }
-  emptyNames.push(...pending);
-  const onlyEmpty = [...new Set(emptyNames)].filter((n) => !columnLayoutNames.has(n) && !players.some((p) => p.name === n));
-  if (onlyEmpty.length) {
-    warnings.push(`${onlyEmpty.map(displayName).join("・")} は名前は見つかりましたが数値を読み取れませんでした。`);
+  const unusedNames = nameItems.slice(blocks.length).filter((x) => x.name);
+  if (unusedNames.length) {
+    warnings.push(`${unusedNames.map((x) => displayName(x.name)).join("・")} は名前は見つかりましたが、対応する数値が読み取れませんでした。`);
   }
   return { players, warnings, order };
 }
@@ -574,9 +565,33 @@ function analyzeScoreboardImage(imageData) {
     let left = 0;
     while (left < W && (border.has(left) || !isDark(px(left, ym)))) left++;
 
-    // 王冠: 旗の右側。鮮やかな黄・橙(旗そのものの色)は除外し、くすんだ金色だけ数える
-    const x0 = Math.min(W, left + Math.round(3.8 * pitch));
-    const x1 = Math.min(W, left + Math.round(5.8 * pitch));
+    // 名前の旗(バナー)の右端を探す。AIは名前が長く旗も長いため、位置を固定にすると
+    // 旗の色を王冠と誤検出してしまう(2026/9/22 の不具合)
+    const rowH = e - s + 1;
+    let bannerEnd = left;
+    let gap = 0;
+    for (let x = left; x < Math.min(W, left + Math.round(8 * pitch)); x++) {
+      let nonBg = 0;
+      for (let y = s; y <= e; y++) if (dist(px(x, y), bg) >= 45) nonBg++;
+      if (nonBg >= rowH * 0.15) {
+        bannerEnd = x;
+        gap = 0;
+      } else if (++gap > Math.round(0.1 * pitch)) break;
+    }
+
+    // 王冠: 旗のすぐ右側。鮮やかな黄・橙(旗そのものの色)は除外し、くすんだ金色だけ数える。
+    // 顔写真(行の高さいっぱいの暗い矩形)に入る手前で打ち切る
+    const x0 = Math.min(W, bannerEnd + Math.round(0.1 * pitch));
+    const xLimit = Math.min(W, bannerEnd + Math.round(1.6 * pitch));
+    let x1 = xLimit;
+    for (let x = x0; x < xLimit; x++) {
+      let darkCount = 0;
+      for (let y = s; y <= e; y++) if (isDark(px(x, y))) darkCount++;
+      if (darkCount >= rowH * 0.5) {
+        x1 = x;
+        break;
+      }
+    }
     let crownPx = 0;
     for (let x = x0; x < x1; x++) {
       for (let y = s; y <= e; y++) {
@@ -680,10 +695,17 @@ function inferTeamsAndWinner(order, analysis) {
     result.warnings.push(`チーム分けを判定できませんでした(盾マークが${clusters.length}種類に分かれました。2チーム戦のみ対応しています)。`);
     return result;
   }
-  // 画像の一番上の人のチームを Team A にする
+  // 画像の一番上の人のチームを Team A にする。名簿にない行(AIなど)はチームに入れない
   const [a, b] = clusters;
-  result.teamA = a.idx.map((k) => order[k]);
-  result.teamB = b.idx.map((k) => order[k]);
+  result.teamA = a.idx.map((k) => order[k]).filter(Boolean);
+  result.teamB = b.idx.map((k) => order[k]).filter(Boolean);
+  const unknownA = a.idx.length - result.teamA.length;
+  const unknownB = b.idx.length - result.teamB.length;
+  if (unknownA || unknownB) {
+    result.warnings.push(
+      `名簿にない行(AIなど)が Team A に${unknownA}人、Team B に${unknownB}人います。必要に応じて手動で追加してください。`
+    );
+  }
 
   // 途中で投了・切断した人には、チームが勝っても王冠が付かない(2026/9/20 の iselo2sei)。
   // そのため「王冠が付いた人が1人以上いて、全員が同じチーム」なら、そのチームを勝者とする
