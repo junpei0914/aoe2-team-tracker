@@ -469,14 +469,13 @@ function parseScoresFromOcrText(text, trace) {
     players.push({ name: item.name, military, economy, tech, society, rawNums: b.values, warning });
   });
 
-  if (unknownRows > 0) {
-    warnings.push(`名簿にない名前の行が${unknownRows}行ありました(AIなど)。行数には数えていますが、スコアは自動入力していません。`);
-  }
   const unusedNames = nameItems.slice(blocks.length).filter((x) => x.name);
   if (unusedNames.length) {
     warnings.push(`${unusedNames.map((x) => displayName(x.name)).join("・")} は名前は見つかりましたが、対応する数値が読み取れませんでした。`);
   }
-  return { players, warnings, order };
+  // rows は行順のスコア。名簿にない行(AIなど)も値を持っているので、あとでAIに割り当てられる
+  const rows = blocks.map((b, k) => ({ name: order[k], values: b.values, ok: b.ok }));
+  return { players, warnings, order, rows, unknownRows };
 }
 
 /* ------------------------------------------------------------
@@ -701,17 +700,7 @@ function inferTeamsAndWinner(order, analysis) {
     result.warnings.push(`チーム分けを判定できませんでした(盾マークが${clusters.length}種類に分かれました。2チーム戦のみ対応しています)。`);
     return result;
   }
-  // 画像の一番上の人のチームを Team A にする。名簿にない行(AIなど)はチームに入れない
   const [a, b] = clusters;
-  result.teamA = a.idx.map((k) => order[k]).filter(Boolean);
-  result.teamB = b.idx.map((k) => order[k]).filter(Boolean);
-  const unknownA = a.idx.length - result.teamA.length;
-  const unknownB = b.idx.length - result.teamB.length;
-  if (unknownA || unknownB) {
-    result.warnings.push(
-      `名簿にない行(AIなど)が Team A に${unknownA}人、Team B に${unknownB}人います。必要に応じて手動で追加してください。`
-    );
-  }
 
   // 途中で投了・切断した人には、チームが勝っても王冠が付かない(2026/9/20 の iselo2sei)。
   // そのため「王冠が付いた人が1人以上いて、全員が同じチーム」なら、そのチームを勝者とする
@@ -721,6 +710,32 @@ function inferTeamsAndWinner(order, analysis) {
   else if (anyCrowned(b) && !anyCrowned(a)) result.winner = "B";
   else if (!anyCrowned(a) && !anyCrowned(b)) result.warnings.push("勝者を判定できませんでした(王冠マークが見つかりません)。");
   else result.warnings.push("勝者を判定できませんでした(両方のチームに王冠マークがあるように見えます)。");
+
+  // 名簿にない行(AI)に AI1 から順に番号を振る。これまでの記録と同じく、勝ったチームのAIを優先する。
+  // AIは全員が同じレートを共有するので、勝敗さえ合っていれば番号の振り方は結果に影響しない。
+  const rowNames = [...order];
+  const unknownIdx = (cl) => cl.idx.filter((k) => !order[k]);
+  const unknownCount = unknownIdx(a).length + unknownIdx(b).length;
+  if (unknownCount > 0) {
+    if (!result.winner) {
+      result.warnings.push(`名簿にない行が${unknownCount}行あります。勝者が判定できなかったため、AIを自動で割り当てていません。`);
+    } else if (unknownCount > AI_NAMES.length) {
+      result.warnings.push(`名簿にない行が${unknownCount}行あり、AIの数(${AI_NAMES.length}体)を超えています。手動で入力してください。`);
+    } else {
+      const winCluster = result.winner === "A" ? a : b;
+      const loseCluster = result.winner === "A" ? b : a;
+      [...unknownIdx(winCluster), ...unknownIdx(loseCluster)].forEach((k, i) => (rowNames[k] = AI_NAMES[i]));
+      result.assignedAi = unknownCount;
+    }
+  }
+  result.rowNames = rowNames;
+  // 画像の一番上の人のチームを Team A にする
+  result.teamA = a.idx.map((k) => rowNames[k]).filter(Boolean);
+  result.teamB = b.idx.map((k) => rowNames[k]).filter(Boolean);
+  const unassigned = rowNames.filter((n) => !n).length;
+  if (unassigned > 0 && result.winner) {
+    result.warnings.push(`名簿にない行が${unassigned}行あります。必要に応じて手動で追加してください。`);
+  }
   return result;
 }
 
@@ -1186,16 +1201,31 @@ function PlayerScoreDetail({ scoreHistory }) {
 
 function Leaderboard({ agg }) {
   const [expanded, setExpanded] = useState(() => new Set());
+  // AI1〜5はラベル違いでしかないので、1体の「AI」にまとめて並べる(レートも全AI共通)
+  const aiPlayers = AI_NAMES.map((n) => agg.players[n]).filter((p) => p && p.games > 0);
+  const aiRow = aiPlayers.length
+    ? {
+        name: AI_KEY,
+        label: "AI",
+        title: `${AI_NAMES.join("・")} の合算`,
+        elo: aiPlayers[0].elo,
+        games: aiPlayers.reduce((s, p) => s + p.games, 0),
+        wins: aiPlayers.reduce((s, p) => s + p.wins, 0),
+        losses: aiPlayers.reduce((s, p) => s + p.losses, 0),
+        scoreHistory: aiPlayers.flatMap((p) => p.scoreHistory),
+      }
+    : null;
   const rows = HUMAN_NAMES
     .map((n) => ({ name: n, ...agg.players[n] }))
     .filter((r) => r.games > 0)
+    .concat(aiRow ? [aiRow] : [])
     .sort((a, b) => b.elo - a.elo);
 
   return (
     <div>
       <div style={{ marginBottom: 18 }}>
         <h2 style={h2Style}>リーダーボード</h2>
-        <p style={subText}>レートは、過去221戦の成績(個人・チームメイト・直接対決)と記録した試合の勝敗・スコア(同じチームの味方と比べた得点の高さ)から推定しています(ChatGPT分析の評価を補助的に使用。試合数が少ない人ほど評価寄り)。試合を記録するたびに計算し直されます。名前をクリックするとスコアの詳細(項目別平均・推移)が見られます。</p>
+        <p style={subText}>レートは、過去221戦の成績(個人・チームメイト・直接対決)と記録した試合の勝敗・スコア(同じチームの味方と比べた得点の高さ)から推定しています(ChatGPT分析の評価を補助的に使用。試合数が少ない人ほど評価寄り)。試合を記録するたびに計算し直されます。名前をクリックするとスコアの詳細(項目別平均・推移)が見られます。AI1〜5はラベル違いなので、1体の「AI」としてまとめて表示しています。</p>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {rows.map((r, i) => {
@@ -1221,8 +1251,8 @@ function Leaderboard({ agg }) {
                   {String(i + 1).padStart(2, "0")}
                 </div>
                 <div style={{ flex: "0 0 130px" }}>
-                  <div style={{ fontFamily: "'Cinzel', serif", fontWeight: 700, fontSize: 15, color: "#ede4d3" }}>
-                    {displayName(r.name)} {hasScores && <span style={{ color: "#665c4f", fontSize: 11 }}>{isOpen ? "▾" : "▸"}</span>}
+                  <div style={{ fontFamily: "'Cinzel', serif", fontWeight: 700, fontSize: 15, color: "#ede4d3" }} title={r.title || ""}>
+                    {r.label || displayName(r.name)} {hasScores && <span style={{ color: "#665c4f", fontSize: 11 }}>{isOpen ? "▾" : "▸"}</span>}
                   </div>
                   <div style={{ marginTop: 4 }}>
                     <Badge elo={r.elo} />
@@ -1347,7 +1377,7 @@ function AddMatch({ agg, onSave }) {
       const text = await ocrExtractText(base64, file.type || "image/png");
       logEntry.rawText = text;
       console.log("OCR raw text:\n" + text);
-      const { players: found, warnings, order } = parseScoresFromOcrText(text, logEntry.trace);
+      const { players: found, warnings, order, rows: ocrRows } = parseScoresFromOcrText(text, logEntry.trace);
       logEntry.parsed = found;
       logEntry.order = order;
       console.log("OCR parse trace:", logEntry.trace);
@@ -1368,9 +1398,19 @@ function AddMatch({ agg, onSave }) {
         setTeamB(inference.teamB);
         setWinner(inference.winner);
       }
+      // 名簿にない行に割り当てたAIのスコア(勝ったチームのAIから AI1、AI2 …)
+      const aiScores = {};
+      (inference.rowNames || []).forEach((n, k) => {
+        if (n && ratingKey(n) === AI_KEY && ocrRows[k]) {
+          const [military, economy, tech, society] = ocrRows[k].values;
+          aiScores[n] = { military, economy, tech, society };
+        }
+      });
       setOcrInfo(
         inference.teamA
-          ? `チーム分け${inference.winner ? "・勝者" : ""}を画像から自動入力しました。下で確認してください。`
+          ? `チーム分け${inference.winner ? "・勝者" : ""}を画像から自動入力しました${
+              inference.assignedAi ? `(名簿にない${inference.assignedAi}行は ${Object.keys(aiScores).sort().join("・")} として入力)` : ""
+            }。下で確認してください。`
           : ""
       );
 
@@ -1385,7 +1425,7 @@ function AddMatch({ agg, onSave }) {
         return;
       }
 
-      const next = { ...scores };
+      const next = { ...scores, ...aiScores };
       found.forEach((p) => {
         next[p.name] = { military: p.military, economy: p.economy, tech: p.tech, society: p.society };
       });
