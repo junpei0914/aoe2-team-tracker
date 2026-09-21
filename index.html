@@ -1199,22 +1199,25 @@ function PlayerScoreDetail({ scoreHistory }) {
   );
 }
 
+// AI1〜5はラベル違いでしかないので、1体の「AI」にまとめる(レートも全AI共通)
+function aiAggregate(agg) {
+  const list = AI_NAMES.map((n) => agg.players[n]).filter((p) => p && p.games > 0);
+  if (!list.length) return null;
+  return {
+    name: AI_KEY,
+    label: "AI",
+    title: `${AI_NAMES.join("・")} の合算`,
+    elo: list[0].elo,
+    games: list.reduce((s, p) => s + p.games, 0),
+    wins: list.reduce((s, p) => s + p.wins, 0),
+    losses: list.reduce((s, p) => s + p.losses, 0),
+    scoreHistory: list.flatMap((p) => p.scoreHistory),
+  };
+}
+
 function Leaderboard({ agg }) {
   const [expanded, setExpanded] = useState(() => new Set());
-  // AI1〜5はラベル違いでしかないので、1体の「AI」にまとめて並べる(レートも全AI共通)
-  const aiPlayers = AI_NAMES.map((n) => agg.players[n]).filter((p) => p && p.games > 0);
-  const aiRow = aiPlayers.length
-    ? {
-        name: AI_KEY,
-        label: "AI",
-        title: `${AI_NAMES.join("・")} の合算`,
-        elo: aiPlayers[0].elo,
-        games: aiPlayers.reduce((s, p) => s + p.games, 0),
-        wins: aiPlayers.reduce((s, p) => s + p.wins, 0),
-        losses: aiPlayers.reduce((s, p) => s + p.losses, 0),
-        scoreHistory: aiPlayers.flatMap((p) => p.scoreHistory),
-      }
-    : null;
+  const aiRow = aiAggregate(agg);
   const rows = HUMAN_NAMES
     .map((n) => ({ name: n, ...agg.players[n] }))
     .filter((r) => r.games > 0)
@@ -1891,7 +1894,7 @@ const REVIEW_BASIS = "過去221戦の集計と、スコア付きで記録され�
 const REVIEW_OVERVIEW = [
   {
     title: "実力の序列ははっきりしている",
-    body: "junpei が頭ひとつ抜けていて、ino と ke_ppy がほぼ並んで続き、iselo2sei までが上位4人。iwsk が中間で、MJHotcake・ishi_sawada・urio0042・haru-s が下位というのが現在の推定です。上位4人と下位4人を分けると大きく偏るので、チーム分けでは「上位2人+下位2人」ずつの組み合わせが基本になります。",
+    body: "junpei が頭ひとつ抜けていて、ino と ke_ppy がほぼ並んで続き、iselo2sei までが上位4人。iwsk が中間で、MJHotcake・ishi_sawada・urio0042・haru-s が下位というのが現在の推定です。上位4人と下位4人を分けると大きく偏るので、チーム分けでは「上位2人+下位2人」ずつの組み合わせが基本になります。AI(AI1〜5の合算)は iwsk と MJHotcake の間くらいで、人間で言えば中位の強さです。",
   },
   {
     title: "「相性」はほとんど実力差で説明できる",
@@ -1984,6 +1987,15 @@ const PLAYER_REVIEWS = {
       "軍事スコア(平均1,031)を伸ばせると評価が大きく変わりそう",
     ],
   },
+  AI: {
+    type: "コンピューター(AI1〜5の合算)",
+    summary: "AI1〜5は勝った順に付けたラベルで、強さの違いではないため、1体のAIとしてまとめて扱っています。通算401戦185勝216敗(勝率46%)、推定レートは1,490で、iwsk と MJHotcake の間くらい。人間で言えば中位の強さです。",
+    points: [
+      "スコアの構成が人間と大きく違い、軍事50%・技術40%に対して経済はわずか3%",
+      "記録に残っている2戦(9/21)はどちらもAIのいるチームが負け、スコア順位は8人中6位と5位",
+      "レートは全AI共通なので、記録するときに AI1〜AI5 のどれを選んでも結果は変わらない",
+    ],
+  },
   urio0042: {
     type: "経済特化(下降中)",
     summary: "記録は9戦(スコア付きは4試合)。スコアは経済が56%と極端に高く、軍事は10%と全員中で最も少ない、典型的な内政重視のスタイルです。9/21 の2戦はどちらもスコアが伸びず(5,469点・2,416点)、レートは1,310前後まで下がりました。",
@@ -2021,8 +2033,8 @@ function ScoreMixBar({ scoreHistory }) {
   );
 }
 
-function PlayerReviewCard({ name, review, agg }) {
-  const p = agg.players[name];
+function PlayerReviewCard({ name, review, agg, player }) {
+  const p = player || agg.players[name];
   if (!p) return null;
   const others = HUMAN_NAMES.filter((m) => m !== name && (agg.players[m]?.games ?? 0) > 0);
   const partners = others
@@ -2048,7 +2060,9 @@ function PlayerReviewCard({ name, review, agg }) {
   return (
     <div style={{ ...cardStyle, marginBottom: 12 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: 16, color: "#ede4d3" }}>{displayName(name)}</span>
+        <span style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: 16, color: "#ede4d3" }} title={p.title || ""}>
+          {p.label || displayName(name)}
+        </span>
         <Badge elo={p.elo} />
         <span style={{ fontSize: 12, color: "#c9a227", fontFamily: "'Inter', sans-serif", fontWeight: 600 }}>{review.type}</span>
         <span style={{ marginLeft: "auto", fontFamily: "'JetBrains Mono', monospace", fontSize: 13, color: tier.color }}>
@@ -2085,9 +2099,11 @@ function PlayerReviewCard({ name, review, agg }) {
 }
 
 function PlayerReviews({ agg }) {
-  const names = Object.keys(PLAYER_REVIEWS)
-    .filter((n) => agg.players[n])
-    .sort((a, b) => agg.players[b].elo - agg.players[a].elo);
+  const ai = aiAggregate(agg);
+  const cards = Object.keys(PLAYER_REVIEWS)
+    .map((n) => ({ name: n, player: n === AI_KEY ? ai : agg.players[n] }))
+    .filter((c) => c.player)
+    .sort((a, b) => b.player.elo - a.player.elo);
   return (
     <div>
       <h2 style={h2Style}>総評</h2>
@@ -2106,8 +2122,8 @@ function PlayerReviews({ agg }) {
       </div>
 
       <h3 style={h3Style}>プレイヤー別(現在のレート順)</h3>
-      {names.map((n) => (
-        <PlayerReviewCard key={n} name={n} review={PLAYER_REVIEWS[n]} agg={agg} />
+      {cards.map((c) => (
+        <PlayerReviewCard key={c.name} name={c.name} player={c.player} review={PLAYER_REVIEWS[c.name]} agg={agg} />
       ))}
       <p style={{ ...subText, fontSize: 12 }}>{MINOR_PLAYER_NOTE}</p>
     </div>
