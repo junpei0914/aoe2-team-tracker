@@ -170,6 +170,8 @@ def parse_de(path):
             raw_name=p.name, civ=p.civilization, team=None, winner=bool(p.winner), actions=0, acts=[],
             ages={}, units=Counter(), buildings=Counter(), techs={}, resign=None,
             pos=(p.position.x, p.position.y) if p.position else None, events=[], tc_cmds=[],
+            # 手元の資源(木・食料・金・石の合計)。ゲームが同期のために録画に書いている値(約6〜14秒ごと)
+            stock=[(r.timestamp.total_seconds(), r.total_resources) for r in (p.timeseries or [])],
         )
     for i, team in enumerate(m.teams):
         for p in team:
@@ -460,6 +462,39 @@ def action_fields(P, end, speed):
     tc = simulate_tcs(P, end)
     if tc:
         out["tc"] = tc
+    rs = stock_per_minute(P, end)
+    if rs:
+        out["rs"] = rs
+        # 時代進化のボタンを押した直前の手元の資源(押した時刻より前の最後の値)
+        rsa = {}
+        for age, t in P["ages"].items():
+            before = [v for x, v in P["stock"] if x <= t]
+            if before and t <= end:
+                rsa[age] = before[-1]
+        if rsa:
+            out["rsa"] = rsa
+    return out
+
+
+def stock_per_minute(P, end):
+    """手元の資源(木・食料・金・石の合計)の1分ごとの平均: [0〜1分, 1〜2分, ...](試合が終わるまで、PER_MINUTE_END 分まで)。
+
+    DE の録画には、ゲームが同期の確認のために各プレイヤーの値を約6〜14秒ごとに書いていて、mgz が timeseries として読む。
+    開始直後に何も予約していない人は 700(初期資源の合計)、城主の時代のボタン(1000)を押すと800〜960減るので、
+    「その時点で手元にある資源の合計」とみてよい(2026/10 確認)。種類ごとの内訳や、集めた量・使った量は入っていない。
+    """
+    samples = P.get("stock") or []
+    if not samples:
+        return None
+    out = []
+    last = min(PER_MINUTE_END, int(end // 60))
+    for i in range(last):
+        vals = [v for t, v in samples if i * 60 <= t < (i + 1) * 60]
+        if not vals:
+            # その1分に値がなければ、直前の値を使う
+            prev = [v for t, v in samples if t < i * 60]
+            vals = prev[-1:] if prev else []
+        out.append(round(sum(vals) / len(vals)) if vals else None)
     return out
 
 
