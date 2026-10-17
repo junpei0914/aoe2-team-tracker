@@ -283,7 +283,8 @@ NON_MILITARY = {"Villager", "Trade Cart", "Fishing Ship", "Transport Ship", "Tra
 SIEGE = {"Battering Ram", "Mangonel", "Scorpion", "Trebuchet", "Bombard Cannon"}
 # 途中の時点(分)での累計。終了時の合計だと、優勢になって余裕ができたから増えた分(結果)が混ざるため、
 # 勝敗が決まる前の時点で比べられるようにする(2026/10 ユーザー指摘)
-CHECKPOINTS = [10, 15, 20, 25, 30, 35, 40]
+CHECKPOINTS = [5, 10, 15, 20, 25, 30, 35, 40]
+PER_MINUTE_END = 40  # グラフ用に1分ごとの累計を出す範囲(分)
 
 
 def checkpoints(P, end):
@@ -321,6 +322,27 @@ def checkpoints(P, end):
         c["bs"] = len({name for t, kind, name, _ in P["events"] if kind == "bs" and t <= lim})
         out[str(cp)] = c
     return out
+
+
+def per_minute(P, end):
+    """グラフ用: 0分から1分ごと(PER_MINUTE_END 分まで、試合が終わるまで)の町の人(v)・軍(m)の累計。HD は空"""
+    if not P.get("events"):
+        return {}
+    last = min(PER_MINUTE_END, int(end // 60))
+    v = [0] * (last + 1)
+    m = [0] * (last + 1)
+    for t, kind, name, n in P["events"]:
+        if kind != "unit" or t > last * 60:
+            continue
+        i = -(-t // 60)  # その時刻を含む分の終わり(t=61秒なら2分時点から数える)
+        if name == "Villager":
+            v[i] += n
+        elif name not in NON_MILITARY:
+            m[i] += n
+    for i in range(1, last + 1):
+        v[i] += v[i - 1]
+        m[i] += m[i - 1]
+    return {"v": v, "m": m}
 
 
 def reached_ages(P, end):
@@ -422,6 +444,7 @@ def to_record(path, info, ps, winner_source):
                 techs=P["techs"],
                 role=P["role"],
                 at=checkpoints(P, min(duration, P["resign"]) if P["resign"] is not None else duration),
+                pm=per_minute(P, min(duration, P["resign"]) if P["resign"] is not None else duration),
             )
             for P in ordered
         },
