@@ -156,7 +156,7 @@ def parse_de(path):
     ps = {}
     for p in m.players:
         ps[p.number] = dict(
-            raw_name=p.name, civ=p.civilization, team=None, winner=bool(p.winner), eapm=p.eapm,
+            raw_name=p.name, civ=p.civilization, team=None, winner=bool(p.winner), actions=0, acts=[],
             ages={}, units=Counter(), buildings=Counter(), techs={}, resign=None,
             pos=(p.position.x, p.position.y) if p.position else None, events=[],
         )
@@ -171,6 +171,9 @@ def parse_de(path):
         P = ps[pl.number]
         t = round(a.timestamp.total_seconds())
         pay = a.payload or {}
+        if a.type.name != "AI_ORDER":
+            P["actions"] += 1
+            P["acts"].append((t, ACTION_CATEGORY.get(a.type.name, OTHER_CATEGORY)))
         kind = a.type.name
         if kind == "RESEARCH":
             tech = pay.get("technology")
@@ -194,7 +197,8 @@ def parse_de(path):
             P["events"].append((t, "build", pay["building"], 1))
         elif kind == "RESIGN":
             P["resign"] = t
-    info = dict(edition="DE", duration=round(m.duration.total_seconds()), map=m.map.name, size=m.map.dimension)
+    info = dict(edition="DE", duration=round(m.duration.total_seconds()), map=m.map.name, size=m.map.dimension,
+                speed=(m.speed_id or 169) / 100)
     return info, ps
 
 
@@ -211,13 +215,14 @@ def parse_hd(path):
         players = s.get_players()
         duration = round(s.get_duration() / 1000)
         game_map = s.get_map()
+        speed = (s.get_settings().get("speed") or (150,))[0] / 100
     _, dataset = get_dataset(Version.HD, None)
     ps = {}
     for p in players:
         civ = dataset["civilizations"].get(str(p["civilization"]), {}).get("name")
         ps[p["number"]] = dict(
             raw_name=p["name"], civ=HD_CIV_NAMES.get(civ, civ), team=p["team_id"], winner=bool(p["winner"]),
-            eapm=p.get("eapm"), ages={}, units=Counter(), buildings=Counter(), techs={}, resign=None,
+            actions=0, acts=[], ages={}, units=Counter(), buildings=Counter(), techs={}, resign=None,
             pos=tuple(p["position"]) if p.get("position") else None,
         )
     with open(path, "rb") as f:
@@ -239,6 +244,9 @@ def parse_hd(path):
             if P is None:
                 continue
             t = round(ms / 1000)
+            if kind != Action.AI_ORDER:
+                P["actions"] += 1
+                P["acts"].append((t, ACTION_CATEGORY.get(kind.name, OTHER_CATEGORY)))
             if kind == Action.RESEARCH:
                 tech = dataset["technologies"].get(str(pay.get("technology_id")))
                 if tech in AGES:
@@ -250,7 +258,7 @@ def parse_hd(path):
     # カスタムマップは日本語環境だと「スタイル: カスタム」のような名前になる
     name = game_map.get("name") or ""
     info = dict(edition="HD", duration=duration, map="Custom" if game_map.get("custom") or "カスタム" in name else name,
-                size=game_map.get("dimension"))
+                size=game_map.get("dimension"), speed=speed)
     return info, ps
 
 
@@ -345,6 +353,79 @@ def per_minute(P, end):
     return {"v": v, "m": m}
 
 
+# 操作(録画に残る命令)の種類。選択や画面の移動は録画に残らない
+ACTION_CATEGORIES = ["move", "order", "queue", "build", "research", "gather", "other"]
+OTHER_CATEGORY = ACTION_CATEGORIES.index("other")
+ACTION_CATEGORY = {name: ACTION_CATEGORIES.index(cat) for cat, names in {
+    # 移動(移動・攻撃しながら移動・中継点・陣形・巡回・追従・護衛・停止・構え・退却)
+    "move": ["MOVE", "DE_ATTACK_MOVE", "ADD_WAYPOINT", "GROUP_MULTI_WAYPOINTS", "FORMATION", "PATROL", "FOLLOW", "GUARD",
+             "STOP", "STANCE", "DE_RETREAT"],
+    # 指示(対象をクリックする命令。攻撃・採集・駐留など。町の人と軍の区別はできない)
+    "order": ["ORDER", "ATTACK_GROUND", "WORK"],
+    "queue": ["DE_QUEUE", "QUEUE", "MAKE", "MULTIQUEUE"],
+    "build": ["BUILD", "WALL", "REPAIR", "GATE"],
+    "research": ["RESEARCH"],
+    "gather": ["GATHER_POINT", "DE_MULTI_GATHERPOINT"],
+}.items() for name in names}
+EAPM_WINDOW = 5  # 時間ごとの eAPM は5分ごと(分)
+EAPM_WINDOW_END = 60
+
+
+def action_stats(P, end, speed):
+    """操作の種類ごとの数を、時代ごと(ac)と5分ごと(aw)にまとめる。
+
+    ac: {時代: [その時代にいた秒数(ゲーム内時間), 種類ごとの数...]}。時代は到達した時刻で区切る(暗黒=dark)
+    aw: 5分ごとの [種類ごとの数...]。試合(投了)の終わりまで丸ごと入る区間だけ
+    eAPM にするときは、数 ÷ (秒数 / 60 / 速度)。速度は試合ごとの値(DE 1.69・HD 1.5)を speed に入れる
+    """
+    if not P.get("acts"):
+        return None, None
+    ages = reached_ages(P, end)
+    bounds = [("dark", 0)] + [(age, ages[age]) for age in ("feudal", "castle", "imperial") if age in ages]
+    ac = {}
+    for i, (age, start) in enumerate(bounds):
+        stop = bounds[i + 1][1] if i + 1 < len(bounds) else end
+        if stop <= start:
+            continue
+        counts = [0] * len(ACTION_CATEGORIES)
+        for t, c in P["acts"]:
+            if start <= t < stop:
+                counts[c] += 1
+        ac[age] = [stop - start] + counts
+    aw = []
+    for w in range(0, EAPM_WINDOW_END, EAPM_WINDOW):
+        lo, hi = w * 60, (w + EAPM_WINDOW) * 60
+        if hi > end:
+            break
+        counts = [0] * len(ACTION_CATEGORIES)
+        for t, c in P["acts"]:
+            if lo <= t < hi:
+                counts[c] += 1
+        aw.append(counts)
+    return ac, aw
+
+
+def action_fields(P, end, speed):
+    """記録に書き込む操作の内訳。AI は操作がほとんど録画に残らず数が当てにならないので入れない"""
+    if not P["raw_name"]:
+        return {}
+    ac, aw = action_stats(P, end, speed)
+    return {"ac": ac, "aw": aw} if ac else {}
+
+
+def real_eapm(P, end, speed):
+    """1分あたりの操作数(実際の時間の1分あたり)。
+
+    mgz の eapm は「ゲーム内時間の1分あたり」で、試合全体の長さで割っている。ゲームは標準の速度で
+    DE 1.69倍・HD 1.5倍で進むので、実際の時間(体感やほかのツールの APM)より低く出る(2026/10 ユーザー指摘)。
+    ここでは投了した人は投了までの時間で割り、ゲームの速度を掛けて実際の時間の1分あたりにする。
+    数えているのは録画に残る「命令」(移動・生産・建設・研究など)だけで、選択や画面の移動は入らない。
+    """
+    if not end or not P.get("actions"):
+        return None
+    return round(P["actions"] / (end / 60) * speed)
+
+
 def reached_ages(P, end):
     """研究を始めた時刻 + 研究時間 = 到達した時刻。到達する前に試合が終わった(投了した)時代は除く。
 
@@ -431,12 +512,14 @@ def to_record(path, info, ps, winner_source):
         duration=duration,
         winner=winner,
         winnerSource=winner_source if winner else None,
+        speed=info.get("speed"),
         teamA=[P["name"] for P in ordered if P["team"] == team_a],
         teamB=[P["name"] for P in ordered if P["team"] != team_a],
         players={
             P["name"]: dict(
                 civ=P["civ"],
-                eapm=P["eapm"],
+                eapm=real_eapm(P, min(duration, P["resign"]) if P["resign"] is not None else duration, info.get("speed", 1)),
+                **action_fields(P, min(duration, P["resign"]) if P["resign"] is not None else duration, info.get("speed", 1)),
                 ages=reached_ages(P, min(duration, P["resign"]) if P["resign"] is not None else duration),
                 resign=P["resign"],
                 units=dict(P["units"].most_common()),
