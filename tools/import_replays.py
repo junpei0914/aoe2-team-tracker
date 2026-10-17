@@ -1,19 +1,22 @@
-"""AoE2 DE の録画ファイル(.aoe2record)を解析して、index.html の録画データ(#replay-data)を書き換える。
+"""AoE2 DE / HD の録画ファイル(.aoe2record)を解析して、index.html の録画データ(#replay-data)を書き換える。
 
 使い方:
     python -m pip install mgz==1.8.51
-    python tools/import_replays.py              # 既定の録画フォルダを読む
-    python tools/import_replays.py <フォルダ>    # 録画フォルダを指定する
+    python tools/import_replays.py                  # 既定の録画フォルダ(DE と HD)を読む
+    python tools/import_replays.py <フォルダ> ...    # 録画フォルダを指定する
 
 録画に入っているのは各プレイヤーの「操作」だけで、ゲーム終了時のスコアは入っていない。
-ここで取り出すのは、文明・チーム・勝敗・時代進化の時刻・生産したユニット・建てた建物・研究・eAPM。
+ここで取り出すのは、文明・チーム・勝敗・時代進化の時刻・生産したユニット・建てた建物・研究・eAPM
+(HD の録画では生産したユニットと建物は取れない)。
 """
 import glob
 import inspect
+import io
 import json
 import logging
 import os
 import re
+import struct
 import sys
 from collections import Counter
 from datetime import datetime
@@ -79,14 +82,28 @@ def patch_queue_action():
 
 
 patch_queue_action()
+import mgz.fast as fast  # noqa: E402
+from mgz.fast.enums import Action, Operation  # noqa: E402
 from mgz.model import parse_match  # noqa: E402
+from mgz.reference import get_dataset  # noqa: E402
+from mgz.summary import Summary  # noqa: E402
+from mgz.util import Version  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INDEX = os.path.join(ROOT, "index.html")
-DEFAULT_DIR = os.path.expanduser(r"~\Games\Age of Empires 2 DE")
+DEFAULT_DIRS = [
+    os.path.expanduser(r"~\Games\Age of Empires 2 DE"),
+    r"C:\Program Files (x86)\Steam\steamapps\common\Age2HD\SaveGame",  # AoE2 HD(2013年版)。2023/12〜2024/1 の試合
+]
 
 # 録画上の名前 → ツールの名前
 NAME_MAP = {"Ke_ppy": "ke_ppy", "dimax": "max"}
+# HD の文明名 → DE の文明名(画面の日本語名は DE の名前で引く)
+HD_CIV_NAMES = {"Mayans": "Maya", "Indians": "Hindustanis"}
+# 録画から勝敗が判定できなかった試合の勝ったチーム(そのチームにいた人の録画上の名前)。ユーザー確認済み
+WINNER_OVERRIDES = {
+    "rec-20240107-0035": "ishi_sawada",  # HD。両チームから投了者が出ていて判定できない(2026/10 確認)
+}
 MIN_DURATION = 600  # 10分未満はやり直し(リスタート)とみなして取り込まない
 AGES = {"Feudal Age": "feudal", "Castle Age": "castle", "Imperial Age": "imperial"}
 # 保存する研究(経済・鍛冶屋・主なユニットのアップグレード)。全部入れるとデータが大きくなりすぎるため絞る
@@ -105,11 +122,25 @@ TECHS = {
 }
 
 
-def default_files(folder):
-    return sorted(glob.glob(os.path.join(folder, "**", "*.aoe2record"), recursive=True), key=os.path.getmtime)
+def default_files(folders):
+    files = []
+    for folder in folders:
+        files += glob.glob(os.path.join(folder, "**", "*.aoe2record"), recursive=True)
+    return sorted(files, key=os.path.getmtime)
 
 
 def parse_file(path):
+    """録画を読み、(試合の情報, プレイヤーごとの集計, 勝者の判定方法) を返す。"""
+    with open(path, "rb") as f:
+        version = fast_header.parse_version(fast_header.decompress(f), f)[0]
+    if version is Version.HD:
+        info, ps = parse_hd(path)
+    else:
+        info, ps = parse_de(path)
+    return info, ps, infer_winner(ps)
+
+
+def parse_de(path):
     with open(path, "rb") as f:
         m = parse_match(f)
     ps = {}
@@ -148,6 +179,65 @@ def parse_file(path):
             P["buildings"][pay["building"]] += 1
         elif kind == "RESIGN":
             P["resign"] = t
+    info = dict(edition="DE", duration=round(m.duration.total_seconds()), map=m.map.name)
+    return info, ps
+
+
+def parse_hd(path):
+    """AoE2 HD(2013年版)の録画を読む。
+
+    mgz の速い方の解析(parse_match)は HD のシナリオ設定部分を読めないので、
+    プレイヤー・文明・チーム・勝敗・マップは遅い方の解析(Summary)で取り、
+    研究と投了は本体の命令を直接読む。HD の生産命令(QUEUE)にはプレイヤー番号が入っておらず、
+    建物が誰のものかも録画からは分からないため、生産数と建物は取れない(空にする)。
+    """
+    with open(path, "rb") as f:
+        s = Summary(f)
+        players = s.get_players()
+        duration = round(s.get_duration() / 1000)
+        game_map = s.get_map()
+    _, dataset = get_dataset(Version.HD, None)
+    ps = {}
+    for p in players:
+        civ = dataset["civilizations"].get(str(p["civilization"]), {}).get("name")
+        ps[p["number"]] = dict(
+            raw_name=p["name"], civ=HD_CIV_NAMES.get(civ, civ), team=p["team_id"], winner=bool(p["winner"]),
+            eapm=p.get("eapm"), ages={}, units=Counter(), buildings=Counter(), techs={}, resign=None,
+        )
+    with open(path, "rb") as f:
+        data = io.BytesIO(f.read())
+    header_len, _ = struct.unpack("<II", data.read(8))
+    data.seek(header_len)
+    fast.meta(data)
+    ms = 0
+    while True:
+        try:
+            op, payload = fast.operation(data)
+        except EOFError:
+            break
+        if op == Operation.SYNC:
+            ms += payload[0]
+        elif op == Operation.ACTION:
+            kind, pay = payload
+            P = ps.get(pay.get("player_id"))
+            if P is None:
+                continue
+            t = round(ms / 1000)
+            if kind == Action.RESEARCH:
+                tech = dataset["technologies"].get(str(pay.get("technology_id")))
+                if tech in AGES:
+                    P["ages"].setdefault(AGES[tech], t)
+                elif tech in TECHS:
+                    P["techs"].setdefault(tech, t)
+            elif kind == Action.RESIGN:
+                P["resign"] = t
+    # カスタムマップは日本語環境だと「スタイル: カスタム」のような名前になる
+    name = game_map.get("name") or ""
+    info = dict(edition="HD", duration=duration, map="Custom" if game_map.get("custom") or "カスタム" in name else name)
+    return info, ps
+
+
+def infer_winner(ps):
     winner_source = "game" if any(P["winner"] for P in ps.values()) else None
     if not winner_source:
         # 勝者が記録されていないとき: 人間が全員投了したチームを負けとする(両方なら先に全員投了した方)
@@ -164,10 +254,10 @@ def parse_file(path):
                 for P in ps.values():
                     P["winner"] = P["team"] in others
                 winner_source = "resign"
-    return m, ps, winner_source
+    return winner_source
 
 
-def to_record(path, m, ps, winner_source):
+def to_record(path, info, ps, winner_source):
     name = os.path.basename(path)
     mt = re.search(r"@(\d{4})\.(\d{2})\.(\d{2}) (\d{2})(\d{2})(\d{2})", name)
     start = datetime(*map(int, mt.groups())) if mt else datetime.fromtimestamp(os.path.getmtime(path))
@@ -177,9 +267,16 @@ def to_record(path, m, ps, winner_source):
     humans = [P for P in ps.values() if P["raw_name"]]
     if len(humans) < 2:
         return None, "人間が2人未満"
-    duration = round(m.duration.total_seconds())
+    duration = info["duration"]
     if duration < MIN_DURATION:
         return None, f"{duration // 60}分で終了(やり直し)"
+    rec_id = "rec-" + start.strftime("%Y%m%d-%H%M")
+    # 録画から勝敗が分からなかった試合で、ユーザーに確認したもの
+    if rec_id in WINNER_OVERRIDES:
+        won = next(P["team"] for P in ps.values() if P["raw_name"] == WINNER_OVERRIDES[rec_id])
+        for P in ps.values():
+            P["winner"] = P["team"] == won
+        winner_source = "user"
     # Team A = 一番番号の小さいプレイヤーのチーム
     first = min(ps, key=lambda n: n)
     team_a = ps[first]["team"]
@@ -196,9 +293,10 @@ def to_record(path, m, ps, winner_source):
             P["name"] = NAME_MAP.get(P["raw_name"], P["raw_name"])
     ordered = [ps[n] for n in sorted(ps)]
     rec = dict(
-        id="rec-" + start.strftime("%Y%m%d-%H%M"),
+        id=rec_id,
         start=start.strftime("%Y-%m-%dT%H:%M"),
-        map=m.map.name,
+        edition=info["edition"],
+        map=info["map"],
         duration=duration,
         winner=winner,
         winnerSource=winner_source if winner else None,
@@ -235,26 +333,26 @@ def write_index(records):
 
 
 def main():
-    folder = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_DIR
-    files = default_files(folder)
+    folders = sys.argv[1:] or DEFAULT_DIRS
+    files = default_files(folders)
     if not files:
-        print(f"録画が見つかりません: {folder}")
+        print(f"録画が見つかりません: {', '.join(folders)}")
         return 1
     records = []
     for path in files:
         name = os.path.basename(path)
         try:
-            m, ps, ws = parse_file(path)
+            info, ps, ws = parse_file(path)
         except Exception as e:  # noqa: BLE001
             print(f"  読めない  {name}: {type(e).__name__}: {str(e)[:100]}")
             continue
-        rec, why = to_record(path, m, ps, ws)
+        rec, why = to_record(path, info, ps, ws)
         if rec is None:
             print(f"  対象外    {name}: {why}")
             continue
         unknown = [n for n in rec["teamA"] + rec["teamB"] if not n.startswith("AI") and n not in KNOWN_NAMES]
         w = {"A": "Aの勝ち", "B": "Bの勝ち", None: "勝敗不明"}[rec["winner"]]
-        print(f"  取り込み  {rec['start']} {rec['map']} {rec['duration'] // 60}分 {w}"
+        print(f"  取り込み  {rec['start']} {rec['edition']} {rec['map']} {rec['duration'] // 60}分 {w}"
               f" A:{'/'.join(rec['teamA'])} B:{'/'.join(rec['teamB'])}"
               + (f"  ※名簿にない名前: {', '.join(unknown)}" if unknown else ""))
         records.append(rec)
