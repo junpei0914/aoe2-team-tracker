@@ -1277,11 +1277,33 @@ function synergyScoreForTeam(team, agg) {
 
 const splitKey = (teamA, teamB) => [[...teamA].sort().join(","), [...teamB].sort().join(",")].sort().join("/");
 
+// 前衛・後衛の割り当て。各チームの前衛(両端)は2人、残りが後衛。
+// 2人チームは両方とも端なので役割を分けない(null)。指定どおりに割り当てられない場合は false。
+// 指定のない人は、録画で得意な方(roleVerdict)が前衛の人から前衛に入れる
+const ROLE_MIN_TEAM = 3;
+function assignTeamRoles(team, roleOf, prefOf) {
+  if (team.length < ROLE_MIN_TEAM) return null;
+  const flank = team.filter((n) => roleOf[n] === "flank");
+  const pocket = team.filter((n) => roleOf[n] === "pocket");
+  if (flank.length > 2 || pocket.length > team.length - 2) return false;
+  const rank = (n) => (prefOf(n) === "flank" ? 0 : prefOf(n) === "pocket" ? 2 : 1);
+  const free = team.filter((n) => !roleOf[n]).sort((a, b) => rank(a) - rank(b));
+  const need = 2 - flank.length;
+  flank.push(...free.slice(0, need));
+  pocket.push(...free.slice(need));
+  // ロビーの色の番号順(チーム内で最小と最大の番号が前衛)
+  return { order: [flank[0], ...pocket, flank[1]], flank, pocket, auto: free };
+}
+
 // ratingOf: 各人のレート(直前の試合を踏まえる場合は今日の調子を足したもの)
 // previousMatches: 同じ日の試合。同じ組み合わせの案に印を付ける
-function suggestSplits(selected, agg, ratingOf, previousMatches = []) {
+// roleOf: 前衛・後衛を指定した人({ 名前: "flank" | "pocket" })。誰も指定していなければ今までどおり役割を出さない
+// pairRules: 2人の組み合わせの指定([{ a, b, type: "same" | "diff" }])。same=同じチーム、diff=別のチーム
+function suggestSplits(selected, agg, ratingOf, previousMatches = [], { roleOf = {}, prefOf = () => null, pairRules = [] } = {}) {
   if (selected.length < 2 || selected.length % 2 !== 0) return [];
   const half = selected.length / 2;
+  const useRoles = half >= ROLE_MIN_TEAM && selected.some((n) => roleOf[n]);
+  const rules = pairRules.filter((r) => selected.includes(r.a) && selected.includes(r.b));
   const fixed = selected[0];
   const rest = selected.slice(1);
   const combosForFixedTeam = combinations(rest, half - 1);
@@ -1290,6 +1312,10 @@ function suggestSplits(selected, agg, ratingOf, previousMatches = []) {
   combosForFixedTeam.forEach((combo) => {
     const teamA = [fixed, ...combo].sort();
     const teamB = rest.filter((n) => !combo.includes(n)).sort();
+    if (!rules.every((r) => (teamA.includes(r.a) === teamA.includes(r.b)) === (r.type === "same"))) return;
+    const rolesA = useRoles ? assignTeamRoles(teamA, roleOf, prefOf) : null;
+    const rolesB = useRoles ? assignTeamRoles(teamB, roleOf, prefOf) : null;
+    if (rolesA === false || rolesB === false) return;
     const eloA = teamA.reduce((s, n) => s + ratingOf(n), 0) / teamA.length;
     const eloB = teamB.reduce((s, n) => s + ratingOf(n), 0) / teamB.length;
     const synA = synergyScoreForTeam(teamA, agg);
@@ -1301,6 +1327,7 @@ function suggestSplits(selected, agg, ratingOf, previousMatches = []) {
       synergyA: synA.score, synergyB: synB.score,
       notesA: synA.notes, notesB: synB.notes,
       alreadyPlayed: played.has(splitKey(teamA, teamB)),
+      rolesA, rolesB,
     });
   });
   splits.sort((a, b) => a.diff - b.diff);
@@ -1949,15 +1976,40 @@ function TeamBuilder({ agg, matches }) {
   const sessionIsRecent = session.length > 0 && Date.now() - session[session.length - 1].id <= SESSION_RECENT_MS;
   const [useSession, setUseSession] = useState(sessionIsRecent);
 
+  const [roles, setRoles] = useState({}); // 前衛・後衛の指定。ないものは指定なし
+  const [pairRules, setPairRules] = useState([]); // 同じチーム・別のチームの指定
+  const [pairDraft, setPairDraft] = useState({ a: "", b: "", type: "same" });
+  const addPairRule = () => {
+    const { a, b, type } = pairDraft;
+    if (!a || !b || a === b) return;
+    // 同じ2人の指定は新しいもので置き換える
+    setPairRules((rs) => [...rs.filter((r) => !((r.a === a && r.b === b) || (r.a === b && r.b === a))), { a, b, type }]);
+    setPairDraft({ a: "", b: "", type });
+  };
+  const rstats = useMemo(() => roleStats(agg), [agg]);
+  const prefOf = (n) => roleVerdict(rstats[ratingKey(n)]).side;
+  const half = selected.length / 2;
+  const canUseRoles = selected.length % 2 === 0 && half >= ROLE_MIN_TEAM;
+  const activeRoles = canUseRoles ? Object.fromEntries(selected.filter((n) => roles[n]).map((n) => [n, roles[n]])) : {};
+
   const toggle = (n) => {
     setSelected((s) => (s.includes(n) ? s.filter((x) => x !== n) : [...s, n]));
   };
+  const setRole = (n, r) => setRoles((m) => {
+    const next = { ...m };
+    if (r) next[n] = r; else delete next[n];
+    return next;
+  });
 
   const ratingOf = (n) => (agg.players[n]?.elo ?? BASE_ELO) + (useSession ? form.adj[n] || 0 : 0);
+  const roleKey = JSON.stringify(activeRoles);
   const splits = useMemo(
-    () => suggestSplits(selected, agg, ratingOf, useSession ? session : []),
-    [selected, agg, useSession, session, form]
+    () => suggestSplits(selected, agg, ratingOf, useSession ? session : [], { roleOf: activeRoles, prefOf, pairRules }),
+    [selected, agg, useSession, session, form, roleKey, rstats, pairRules]
   );
+  const activePairRules = pairRules.filter((r) => selected.includes(r.a) && selected.includes(r.b));
+  const flankCount = Object.values(activeRoles).filter((r) => r === "flank").length;
+  const pocketCount = Object.values(activeRoles).filter((r) => r === "pocket").length;
   const lastMatch = session[session.length - 1];
   const pct = (p) => `${Math.round(p * 100)}%`;
   const signed = (v) => `${v > 0 ? "+" : v < 0 ? "−" : "±"}${Math.abs(Math.round(v))}`;
@@ -2014,6 +2066,86 @@ function TeamBuilder({ agg, matches }) {
         </div>
       )}
 
+      {selected.length >= 2 && (
+        <div style={{ ...cardStyle, marginBottom: 16 }}>
+          <div style={{ fontFamily: "'Cinzel', serif", fontWeight: 700, fontSize: 13, color: "#c9a227" }}>同じチーム・別のチームの指定(任意)</div>
+          <div style={{ fontSize: 12, color: "#a89a86", fontFamily: "'Inter', sans-serif", lineHeight: 1.7, marginTop: 4 }}>
+            「この2人は同じチーム」「この2人は別のチーム」を指定すると、それを満たす分け方だけを提案します。
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+            <select value={pairDraft.a} onChange={(e) => setPairDraft((d) => ({ ...d, a: e.target.value }))} style={selectStyle} aria-label="1人目">
+              <option value="">1人目</option>
+              {selected.map((n) => <option key={n} value={n}>{displayName(n)}</option>)}
+            </select>
+            <span style={{ fontSize: 12, color: "#8b7a6b" }}>と</span>
+            <select value={pairDraft.b} onChange={(e) => setPairDraft((d) => ({ ...d, b: e.target.value }))} style={selectStyle} aria-label="2人目">
+              <option value="">2人目</option>
+              {selected.filter((n) => n !== pairDraft.a).map((n) => <option key={n} value={n}>{displayName(n)}</option>)}
+            </select>
+            <span style={{ fontSize: 12, color: "#8b7a6b" }}>を</span>
+            <Toggle label="同じチーム" active={pairDraft.type === "same"} color="#8fa876" onClick={() => setPairDraft((d) => ({ ...d, type: "same" }))} />
+            <Toggle label="別のチーム" active={pairDraft.type === "diff"} color="#c98a4b" onClick={() => setPairDraft((d) => ({ ...d, type: "diff" }))} />
+            <Toggle label="追加" active={!!(pairDraft.a && pairDraft.b && pairDraft.a !== pairDraft.b)} onClick={addPairRule} />
+          </div>
+          {pairRules.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 10 }}>
+              {pairRules.map((r) => {
+                const active = activePairRules.includes(r);
+                return (
+                  <div key={`${r.a}|${r.b}`} style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "'Inter', sans-serif", fontSize: 13, color: active ? "#ede4d3" : "#665c4f" }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: r.type === "same" ? "#8fa876" : "#c98a4b" }}>{r.type === "same" ? "同じチーム" : "別のチーム"}</span>
+                    <span>{displayName(r.a)} × {displayName(r.b)}</span>
+                    {!active && <span style={{ fontSize: 11 }}>(選ばれていない人がいるので使っていません)</span>}
+                    <button
+                      onClick={() => setPairRules((rs) => rs.filter((x) => x !== r))}
+                      style={{ background: "transparent", border: "none", color: "#8b7a6b", cursor: "pointer", fontSize: 13 }}
+                      aria-label="この指定を消す"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {canUseRoles && (
+        <div style={{ ...cardStyle, marginBottom: 16 }}>
+          <div style={{ fontFamily: "'Cinzel', serif", fontWeight: 700, fontSize: 13, color: "#c9a227" }}>前衛・後衛の指定(任意)</div>
+          <div style={{ fontSize: 12, color: "#a89a86", fontFamily: "'Inter', sans-serif", lineHeight: 1.7, marginTop: 4 }}>
+            指定した人がその役割になる分け方だけを提案します。各チームの前衛(両端)は2人、残り{half - 2}人が後衛です。
+            指定しない人は、録画で前衛が得意な人から前衛に入れます。全員「指定なし」なら今までどおり役割を決めずに提案します。
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10 }}>
+            {selected.map((n) => {
+              const pref = prefOf(n);
+              return (
+                <div key={n} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ width: 120, fontFamily: "'Inter', sans-serif", fontSize: 13, color: "#ede4d3" }}>{displayName(n)}</span>
+                  <Toggle label="指定なし" active={!roles[n]} onClick={() => setRole(n, null)} />
+                  <Toggle label="前衛" active={roles[n] === "flank"} color="#c07a6f" onClick={() => setRole(n, "flank")} />
+                  <Toggle label="後衛" active={roles[n] === "pocket"} color="#7f9bb5" onClick={() => setRole(n, "pocket")} />
+                  {pref && <span style={{ fontSize: 11, color: "#8b7a6b", fontFamily: "'Inter', sans-serif" }}>録画では{ROLE_JA[pref]}が得意</span>}
+                </div>
+              );
+            })}
+          </div>
+          {(flankCount > 4 || pocketCount > 2 * (half - 2)) && (
+            <div style={{ marginTop: 8, color: "#c98a4b", fontFamily: "'Inter', sans-serif", fontSize: 13 }}>
+              {flankCount > 4 ? `前衛は両チーム合わせて4人までです(いま${flankCount}人)。` : `後衛は両チーム合わせて${2 * (half - 2)}人までです(いま${pocketCount}人)。`}
+            </div>
+          )}
+          {Object.keys(activeRoles).length > 0 && (
+            <div style={{ marginTop: 8, fontSize: 11, color: "#665c4f", fontFamily: "'Inter', sans-serif", lineHeight: 1.7 }}>
+              ゲームでは、ロビーの設定で「Team Together」と「Team Positions」をオンにし、案に出ている色の番号に各人を入れてください。
+              チームの中で番号が最小と最大の人が前衛(両端)、間の番号の人が後衛になります(左右どちら向きに並ぶかは選べません)。
+            </div>
+          )}
+        </div>
+      )}
+
       {splits.map((s, i) => {
         // 各チームに表示している avg・相性の値と足し算が合うよう、丸めた後の値で内訳を出す(正ならTeam Aが上)
         const eloEdge = Math.round(s.eloA) - Math.round(s.eloB);
@@ -2047,21 +2179,25 @@ function TeamBuilder({ agg, matches }) {
             </div>
           </div>
           <div style={{ display: "flex", gap: 20 }}>
-            <SplitTeam title="Team A" names={s.teamA} elo={s.eloA} synergy={s.synergyA} color="#8fa876" notes={s.notesA} />
-            <SplitTeam title="Team B" names={s.teamB} elo={s.eloB} synergy={s.synergyB} color="#c98a4b" notes={s.notesB} />
+            <SplitTeam title="Team A" names={s.teamA} elo={s.eloA} synergy={s.synergyA} color="#8fa876" notes={s.notesA} roles={s.rolesA} colorStart={1} />
+            <SplitTeam title="Team B" names={s.teamB} elo={s.eloB} synergy={s.synergyB} color="#c98a4b" notes={s.notesB} roles={s.rolesB} colorStart={s.teamA.length + 1} />
           </div>
         </div>
         );
       })}
 
       {selected.length >= 2 && selected.length % 2 === 0 && splits.length === 0 && (
-        <div style={{ color: "#a89a86", fontSize: 13 }}>候補を計算中、またはメンバーが足りません。</div>
+        <div style={{ color: "#a89a86", fontSize: 13 }}>
+          {Object.keys(activeRoles).length > 0 || activePairRules.length > 0
+            ? "指定した前衛・後衛や同じチーム・別のチームの組み合わせでは2チームに分けられません。指定を減らしてください。"
+            : "候補を計算中、またはメンバーが足りません。"}
+        </div>
       )}
     </div>
   );
 }
 
-function SplitTeam({ title, names, elo, synergy, color, notes }) {
+function SplitTeam({ title, names, elo, synergy, color, notes, roles, colorStart }) {
   const syn = Math.round(synergy);
   return (
     <div style={{ flex: 1 }}>
@@ -2071,9 +2207,21 @@ function SplitTeam({ title, names, elo, synergy, color, notes }) {
           {" "}· 相性 {syn > 0 ? "+" : syn < 0 ? "−" : "±"}{Math.abs(syn)}
         </span>
       </div>
-      {names.map((n) => (
-        <div key={n} style={{ fontFamily: "'Inter', sans-serif", fontSize: 13, color: "#ede4d3" }}>{displayName(n)}</div>
-      ))}
+      {roles
+        ? roles.order.map((n, i) => {
+            const role = roles.flank.includes(n) ? "flank" : "pocket";
+            return (
+              <div key={n} style={{ fontFamily: "'Inter', sans-serif", fontSize: 13, color: "#ede4d3" }}>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#8b7a6b" }}>色{colorStart + i} </span>
+                <span style={{ fontSize: 11, fontWeight: 600, color: role === "flank" ? "#c07a6f" : "#7f9bb5" }}>{ROLE_JA[role]}</span>{" "}
+                {displayName(n)}
+                {roles.auto.includes(n) && <span style={{ fontSize: 10, color: "#665c4f" }}> (自動)</span>}
+              </div>
+            );
+          })
+        : names.map((n) => (
+            <div key={n} style={{ fontFamily: "'Inter', sans-serif", fontSize: 13, color: "#ede4d3" }}>{displayName(n)}</div>
+          ))}
       {notes.map((note, idx) => (
         <div key={idx} style={{ marginTop: 6, fontSize: 11, fontFamily: "'Inter', sans-serif", color: note.type === "good" ? "#8fa876" : "#c07a6f" }}>
           {note.type === "good" ? "◎ 好相性" : "✕ 要注意"}: {displayName(note.pair[0])}×{displayName(note.pair[1])} {note.bonus > 0 ? "+" : "−"}{Math.abs(Math.round(note.bonus))}
