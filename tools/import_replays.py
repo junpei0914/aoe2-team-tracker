@@ -158,7 +158,7 @@ def parse_de(path):
         ps[p.number] = dict(
             raw_name=p.name, civ=p.civilization, team=None, winner=bool(p.winner), eapm=p.eapm,
             ages={}, units=Counter(), buildings=Counter(), techs={}, resign=None,
-            pos=(p.position.x, p.position.y) if p.position else None,
+            pos=(p.position.x, p.position.y) if p.position else None, events=[],
         )
     for i, team in enumerate(m.teams):
         for p in team:
@@ -178,6 +178,8 @@ def parse_de(path):
                 P["ages"].setdefault(AGES[tech], t)
             elif tech in TECHS:
                 P["techs"].setdefault(tech, t)
+            if tech in BLACKSMITH_TECHS:
+                P["events"].append((t, "bs", tech, 1))
         elif kind in ("DE_QUEUE", "QUEUE") and pay.get("unit"):
             # 同じ命令が二重に記録されていることがあるので除く
             key = (pl.number, pay.get("sequence"), tuple(pay.get("object_ids") or []), pay.get("unit"))
@@ -186,8 +188,10 @@ def parse_de(path):
             seen.add(key)
             # 複数の建物を選んで生産しても、DEでは1回の命令で amount 体を空いている建物に振り分ける
             P["units"][pay["unit"]] += pay.get("amount") or 1
+            P["events"].append((t, "unit", pay["unit"], pay.get("amount") or 1))
         elif kind == "BUILD" and pay.get("building"):
             P["buildings"][pay["building"]] += 1
+            P["events"].append((t, "build", pay["building"], 1))
         elif kind == "RESIGN":
             P["resign"] = t
     info = dict(edition="DE", duration=round(m.duration.total_seconds()), map=m.map.name, size=m.map.dimension)
@@ -268,6 +272,55 @@ def infer_winner(ps):
                     P["winner"] = P["team"] in others
                 winner_source = "resign"
     return winner_source
+
+
+BLACKSMITH_TECHS = {
+    "Forging", "Iron Casting", "Blast Furnace", "Fletching", "Bodkin Arrow", "Bracer", "Scale Mail Armor",
+    "Chain Mail Armor", "Plate Mail Armor", "Padded Archer Armor", "Leather Archer Armor", "Ring Archer Armor",
+    "Scale Barding Armor", "Chain Barding Armor", "Plate Barding Armor",
+}
+NON_MILITARY = {"Villager", "Trade Cart", "Fishing Ship", "Transport Ship", "Trade Cog"}
+SIEGE = {"Battering Ram", "Mangonel", "Scorpion", "Trebuchet", "Bombard Cannon"}
+# 途中の時点(分)での累計。終了時の合計だと、優勢になって余裕ができたから増えた分(結果)が混ざるため、
+# 勝敗が決まる前の時点で比べられるようにする(2026/10 ユーザー指摘)
+CHECKPOINTS = [10, 15, 20, 25, 30, 35, 40]
+
+
+def checkpoints(P, end):
+    """各時点までの累計: v=町の人, m=軍, tc=町の中心の建設, tr=荷馬車, sg=攻囲兵器, cs=城の建設, bs=鍛冶場の研究。
+
+    生産はキューに入れた数、建物は建設を指示した回数(合計と同じく目安)。試合が終わった後の時点は入れない。
+    HD の録画は生産命令の持ち主が分からないので空。
+    """
+    out = {}
+    if not P.get("events"):
+        return out
+    for cp in CHECKPOINTS:
+        lim = cp * 60
+        if lim > end:
+            break
+        c = dict(v=0, m=0, tc=0, tr=0, sg=0, cs=0, bs=0)
+        for t, kind, name, n in P["events"]:
+            if t > lim:
+                continue
+            if kind == "unit":
+                if name == "Villager":
+                    c["v"] += n
+                elif name == "Trade Cart":
+                    c["tr"] += n
+                elif name not in NON_MILITARY:
+                    c["m"] += n
+                    if name in SIEGE:
+                        c["sg"] += n
+            elif kind == "build":
+                if name == "Town Center":
+                    c["tc"] += n
+                elif name == "Castle":
+                    c["cs"] += n
+        # 鍛冶場の研究は、押し直しで二重に数えないよう種類の数にする
+        c["bs"] = len({name for t, kind, name, _ in P["events"] if kind == "bs" and t <= lim})
+        out[str(cp)] = c
+    return out
 
 
 def reached_ages(P, end):
@@ -368,6 +421,7 @@ def to_record(path, info, ps, winner_source):
                 buildings=dict(P["buildings"].most_common()),
                 techs=P["techs"],
                 role=P["role"],
+                at=checkpoints(P, min(duration, P["resign"]) if P["resign"] is not None else duration),
             )
             for P in ordered
         },
