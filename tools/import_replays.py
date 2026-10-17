@@ -105,6 +105,11 @@ HD_CIV_NAMES = {"Mayans": "Maya", "Indians": "Hindustanis"}
 WINNER_OVERRIDES = {
     "rec-20240107-0035": "ishi_sawada",  # HD。両チームから投了者が出ていて判定できない(2026/10 確認)
 }
+# ゲームの技術ツリー(文明ごとに作れるもの)。パッチで変わるので、取り込みのたびに読み直す
+CIV_TREE_DIR = r"C:\Program Files (x86)\Steam\steamapps\common\AoE2DE\resources\_common\dat\CivTechTrees"
+CIV_TREE_NAMES = {"MAYANS": "Maya", "INDIANS": "Hindustanis", "MAGYAR": "Magyars"}  # ファイル名 → 録画の文明名
+CIV_TREE_MIN_CIVS = 10
+JA_STRINGS = r"C:\Program Files (x86)\Steam\steamapps\common\AoE2DE\resources\jp\strings\key-value\key-value-strings-utf8.txt"
 MIN_DURATION = 600  # 10分未満はやり直し(リスタート)とみなして取り込まない
 AGES = {"Feudal Age": "feudal", "Castle Age": "castle", "Imperial Age": "imperial"}
 # 時代進化の研究時間(秒、ゲーム内時間)。録画に残るのは研究を始めた(ボタンを押した)時刻なので、
@@ -116,6 +121,12 @@ AGE_SPEED = {
     "Malay": {"feudal": 1.66, "castle": 1.66, "imperial": 1.66},
     "Persians": {"feudal": 1.05, "castle": 1.10, "imperial": 1.15},
 }
+# 町の中心の生産時間(秒、ゲーム内時間)。町の中心が空いていた時間を出すために、待ち行列を再現する(simulate_tcs)
+VILLAGER_SEC = 25
+TC_TECH_SEC = {"Loom": 25, "Wheelbarrow": 75, "Hand Cart": 55, "Town Watch": 25, "Town Patrol": 40}
+# 町の中心の作業速度が速い文明(ゲーム内の文明説明から)。ペルシアは暗黒/領主/城主/帝王の時代で +5/10/15/20%
+TC_SPEED = {"Persians": [1.05, 1.10, 1.15, 1.20]}
+TC_IDLE_END = 45 * 60  # 空いていた時間はこの時刻まで保存する(人口が埋まった後の空きは問題にならないため)
 # 保存する研究(経済・鍛冶屋・主なユニットのアップグレード)。全部入れるとデータが大きくなりすぎるため絞る
 TECHS = {
     "Loom", "Wheelbarrow", "Hand Cart", "Double-Bit Axe", "Bow Saw", "Two-Man Saw", "Horse Collar",
@@ -158,7 +169,7 @@ def parse_de(path):
         ps[p.number] = dict(
             raw_name=p.name, civ=p.civilization, team=None, winner=bool(p.winner), actions=0, acts=[],
             ages={}, units=Counter(), buildings=Counter(), techs={}, resign=None,
-            pos=(p.position.x, p.position.y) if p.position else None, events=[],
+            pos=(p.position.x, p.position.y) if p.position else None, events=[], tc_cmds=[],
         )
     for i, team in enumerate(m.teams):
         for p in team:
@@ -197,6 +208,17 @@ def parse_de(path):
             P["events"].append((t, "build", pay["building"], 1))
         elif kind == "RESIGN":
             P["resign"] = t
+        elif kind == "SPECIAL" and pay.get("order") == "Unqueue":
+            # 生産の取り消し。object_ids には建物ID×256 が入っている(slot_id は待ち行列の何番目の枠か)
+            for oid in pay.get("object_ids") or []:
+                P["tc_cmds"].append((t, "unqueue", oid >> 8, pay.get("slot_id") or 0))
+        if kind in ("DE_QUEUE", "QUEUE") and pay.get("unit") == "Villager" or kind == "RESEARCH" and (
+                pay.get("technology") in AGES or pay.get("technology") in TC_TECH_SEC):
+            ids = pay.get("object_ids") or []
+            if kind == "RESEARCH":
+                P["tc_cmds"].append((t, "research", ids[0] if ids else None, pay["technology"]))
+            else:
+                P["tc_cmds"].append((t, "unit", tuple(ids), pay.get("amount") or 1))
     info = dict(edition="DE", duration=round(m.duration.total_seconds()), map=m.map.name, size=m.map.dimension,
                 speed=(m.speed_id or 169) / 100)
     return info, ps
@@ -296,14 +318,17 @@ PER_MINUTE_END = 80  # グラフ用に1分ごとの累計を出す範囲(分)
 
 
 def checkpoints(P, end):
-    """各時点までの累計: v=町の人, m=軍, tc=町の中心の建設, tr=荷馬車, sg=攻囲兵器, cs=城の建設, bs=鍛冶場の研究。
+    """各時点までの累計: v=町の人, m=軍, tc=追加した町の中心, tr=荷馬車, sg=攻囲兵器, cs=城の建設, bs=鍛冶場の研究。
 
-    生産はキューに入れた数、建物は建設を指示した回数(合計と同じく目安)。試合が終わった後の時点は入れない。
+    生産はキューに入れた数、城は建設を指示した回数(合計と同じく目安)。試合が終わった後の時点は入れない。
+    町の中心は建設の指示の回数だと実際より多く出る(1試合13など)ので、最初の町の中心以外で、
+    町の人か研究を予約した町の中心の数にする(建て終わってから最初に使うまでの分だけ遅めに出る)。
     HD の録画は生産命令の持ち主が分からないので空。
     """
     out = {}
     if not P.get("events"):
         return out
+    tc_first = ((simulate_tcs(P, end) or {}).get("f") or [0])[1:]
     for cp in CHECKPOINTS:
         lim = cp * 60
         if lim > end:
@@ -322,12 +347,11 @@ def checkpoints(P, end):
                     if name in SIEGE:
                         c["sg"] += n
             elif kind == "build":
-                if name == "Town Center":
-                    c["tc"] += n
-                elif name == "Castle":
+                if name == "Castle":
                     c["cs"] += n
         # 鍛冶場の研究は、押し直しで二重に数えないよう種類の数にする
         c["bs"] = len({name for t, kind, name, _ in P["events"] if kind == "bs" and t <= lim})
+        c["tc"] = sum(1 for f in tc_first if f <= lim)
         out[str(cp)] = c
     return out
 
@@ -433,6 +457,9 @@ def action_fields(P, end, speed):
     ua = units_by_age(P, end)
     if ua:
         out["ua"] = ua
+    tc = simulate_tcs(P, end)
+    if tc:
+        out["tc"] = tc
     return out
 
 
@@ -489,6 +516,115 @@ def assign_roles(ps, size):
             continue
         for i, n in enumerate(arc):
             ps[n]["role"] = "flank" if i in (0, len(arc) - 1) else "pocket"
+
+
+def tc_speed(P, t):
+    """時刻 t での町の中心の作業速度の倍率(ペルシアは時代ごとに速くなる)"""
+    rates = TC_SPEED.get(P["civ"])
+    if not rates:
+        return 1
+    ages = reached_ages(P, 10 ** 9)
+    i = sum(1 for age in ("feudal", "castle", "imperial") if age in ages and ages[age] <= t)
+    return rates[i]
+
+
+def simulate_tcs(P, end):
+    """町の中心ごとの待ち行列を再現して、町の中心が空いていた時間と、使っていた町の中心を返す。
+
+    録画に残るのは「予約した時刻」だけなので、まとめて予約すると5分ごとの数がずれ、時代進化・手押し車などの研究中に
+    作れない時間も分からない(2026/10 ユーザー指摘)。そこで町の中心ごとに「予約 → 先頭から順に作る(町の人25秒、
+    研究はその研究時間) → 取り消しは待ち行列から外す」を並べ、待ち行列が空だった区間を「空いていた時間」とする。
+    予約した時点で資源は払われているので、作られなかったのは取り消しか人口の上限(家が足りない)の場合だけ。
+    人口の上限で止まっていた時間は録画から分からないので、生産していた扱いになる(空き時間は少なめに出る)。
+    町の中心は、町の人か町の中心の研究を最初に予約した時刻から数える(建て終わった時刻は録画に残らない)。
+    最初の町の中心は0秒から。最後に使った後(壊された・人口が埋まったなど)は数えない。
+
+    戻り値: {"f": [各町の中心を最初に使った時刻], "i": [[空き始め, 空き終わり], ...]}(TC_IDLE_END 秒まで、町の中心ごとの区間を合わせて並べたもの)
+    """
+    cmds = sorted(P.get("tc_cmds") or [], key=lambda c: c[0])
+    if not cmds:
+        return None
+    tcs = {}  # 建物ID -> {first, queue(まだ始まっていないもの), busy_until(作っている最中のものが終わる時刻), done, idle, last}
+
+    def tc(oid, t):
+        if oid not in tcs:
+            first = 0 if not tcs and t < 120 else t
+            tcs[oid] = dict(first=first, queue=[], busy_until=first, done=[], idle=[], last=t)
+        return tcs[oid]
+
+    def duration(item, start):
+        kind, name = item
+        if kind == "research" and name in AGES:
+            age = AGES[name]
+            return AGE_RESEARCH_SEC[age] / AGE_SPEED.get(P["civ"], {}).get(age, 1)
+        return (VILLAGER_SEC if kind == "unit" else TC_TECH_SEC[name]) / tc_speed(P, start)
+
+    def advance(s, t):
+        """t まで生産を進める(待ち行列の先頭から、前のものが終わり次第始める)。終わると queue は空か busy_until > t"""
+        while s["queue"] and s["busy_until"] <= t:
+            item = s["queue"].pop(0)
+            start = s["busy_until"]
+            s["busy_until"] = start + duration(item, start)
+            s["done"].append(item)
+
+    def push(s, t, item):
+        advance(s, t)
+        if not s["queue"] and s["busy_until"] < t:
+            if t - s["busy_until"] >= 1:
+                s["idle"].append([s["busy_until"], t])
+            s["busy_until"] = t
+        s["queue"].append(item)
+        s["last"] = t
+        advance(s, t)
+
+    queued_techs = set()
+    for t, kind, target, arg in cmds:
+        if t > end:
+            break
+        if kind == "unit":
+            ids = [i for i in target if i is not None]
+            for _ in range(arg if ids else 0):
+                # 複数の町の中心を選んで予約すると、待ち行列の短いところから振り分けられる
+                for i in ids:
+                    advance(tc(i, t), t)
+                s = min((tc(i, t) for i in ids), key=lambda s: (len(s["queue"]), s["busy_until"]))
+                push(s, t, ("unit", "Villager"))
+        elif kind == "research":
+            # 同じ研究が二重に記録されていることがある(研究は一度しか予約できない)
+            if target is None or arg in queued_techs:
+                continue
+            queued_techs.add(arg)
+            push(tc(target, t), t, ("research", arg))
+        elif kind == "unqueue" and target in tcs:
+            s = tcs[target]
+            advance(s, t)
+            producing = s["busy_until"] > t and s["done"]
+            full = ([s["done"][-1]] if producing else []) + s["queue"]
+            if not full:
+                continue
+            # 画面の待ち行列は、同じものが続く分を1つの枠にまとめて表示する(枠0 が作っている最中のもの)。
+            # 枠をクリックすると、その枠の最後の1つが外れる。作っている最中の1つだけなら作るのをやめる
+            groups = []
+            for i, item in enumerate(full):
+                if groups and full[groups[-1][-1]] == item:
+                    groups[-1].append(i)
+                else:
+                    groups.append([i])
+            idx = groups[min(arg, len(groups) - 1)][-1]
+            if producing and idx == 0:
+                removed = s["done"].pop()
+                s["busy_until"] = t
+                advance(s, t)
+            else:
+                removed = s["queue"].pop(idx - (1 if producing else 0))
+            if removed[0] == "research":
+                queued_techs.discard(removed[1])
+    out_idle = []
+    for s in tcs.values():
+        advance(s, s["last"])
+        stop = min(end, s["last"], TC_IDLE_END)
+        out_idle += [[round(a), round(min(b, stop))] for a, b in s["idle"] if a < stop and min(b, stop) - a >= 1]
+    return {"f": sorted(round(s["first"]) for s in tcs.values()), "i": sorted(out_idle)}
 
 
 def to_record(path, info, ps, winner_source):
@@ -558,16 +694,65 @@ def to_record(path, info, ps, winner_source):
     return rec, None
 
 
+def civ_unavailable():
+    """文明ごとに「作れない・研究できないもの」を、ゲームの技術ツリー(CivTechTrees/*.json)から作る。
+
+    診断や相談文で、その文明にないもの(日本のユサール、ケルトの重石弓射手など)を勧めないために使う(2026/10 ユーザー指摘)。
+    CIV_TREE_MIN_CIVS 以上の文明が持っている共通のもの(槍兵・ユサールなど)は「作れないもの」を、
+    それより少ない文明にしかないもの(固有ユニット・らくだ以外の地域ユニットなど)は「作れるもの」を書く(小さくするため)。
+    技術ツリーには「作れない」と書かれず、項目ごと載っていないこともある(日本のらくだ騎兵など)ので、載っていないものも作れない扱い。
+    ゲームが見つからないときは None(index.html の今の内容を残す)。
+    """
+    files = glob.glob(os.path.join(CIV_TREE_DIR, "*.json"))
+    if not files:
+        return None
+    have = {}
+    string_ids = {}
+    for path in files:
+        with open(path, encoding="utf-8") as f:
+            j = json.load(f)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        civ = CIV_TREE_NAMES.get(stem, stem.title())
+        nodes = [n for k in ("civ_techs_buildings", "civ_techs_units") for n in j.get(k, [])]
+        have[civ] = {n["Name"] for n in nodes if n.get("Node Status") != "NotAvailable"}
+        for n in nodes:
+            string_ids.setdefault(n["Name"], n.get("Name String ID"))
+    count = Counter(name for names in have.values() for name in names)
+    common = {name for name, c in count.items() if c >= CIV_TREE_MIN_CIVS}
+    unavailable = {civ: sorted(common - names) for civ, names in sorted(have.items())}
+    # 作れないものの日本語名(ゲーム内の表記)。相談文に入れる
+    ja_strings = {}
+    if os.path.exists(JA_STRINGS):
+        with open(JA_STRINGS, encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r'(\d+)\s+"(.*)"', line)
+                if m:
+                    ja_strings[m.group(1)] = m.group(2).replace("\\n", "")  # ツリー表示用の改行を除く
+    names = {x for v in unavailable.values() for x in v}
+    ja = {x: ja_strings[str(string_ids[x])] for x in sorted(names) if str(string_ids.get(x)) in ja_strings}
+    # u: 共通のもののうち作れないもの / r: 一部の文明にしかないもの(固有ユニットなど)のうち作れるもの / ja: 日本語名
+    return {"u": unavailable, "r": {civ: sorted(names - common) for civ, names in sorted(have.items())}, "ja": ja}
+
+
+def replace_block(html, block_id, data):
+    body = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    body = body.replace("</", "<\\/")
+    new_block = f'<script type="application/json" id="{block_id}">{body}</script>'
+    pattern = re.compile(rf'<script type="application/json" id="{block_id}">.*?</script>', re.S)
+    if not pattern.search(html):
+        raise RuntimeError(f'index.html に <script type="application/json" id="{block_id}"> がありません')
+    return pattern.sub(lambda _: new_block, html, count=1)
+
+
 def write_index(records):
     with open(INDEX, encoding="utf-8") as f:
         html = f.read()
-    body = json.dumps(records, ensure_ascii=False, separators=(",", ":"))
-    body = body.replace("</", "<\\/")
-    new_block = f'<script type="application/json" id="replay-data">{body}</script>'
-    pattern = re.compile(r'<script type="application/json" id="replay-data">.*?</script>', re.S)
-    if not pattern.search(html):
-        raise RuntimeError('index.html に <script type="application/json" id="replay-data"> がありません')
-    html = pattern.sub(lambda _: new_block, html, count=1)
+    html = replace_block(html, "replay-data", records)
+    unavailable = civ_unavailable()
+    if unavailable:
+        html = replace_block(html, "civ-unavailable", unavailable)
+    else:
+        print(f"  ※ゲームの技術ツリーが見つからないので、文明ごとの作れないものは更新しません: {CIV_TREE_DIR}")
     with open(INDEX, "w", encoding="utf-8", newline="") as f:
         f.write(html)
 
