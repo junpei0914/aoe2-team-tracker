@@ -283,8 +283,8 @@ NON_MILITARY = {"Villager", "Trade Cart", "Fishing Ship", "Transport Ship", "Tra
 SIEGE = {"Battering Ram", "Mangonel", "Scorpion", "Trebuchet", "Bombard Cannon"}
 # 途中の時点(分)での累計。終了時の合計だと、優勢になって余裕ができたから増えた分(結果)が混ざるため、
 # 勝敗が決まる前の時点で比べられるようにする(2026/10 ユーザー指摘)
-CHECKPOINTS = [5, 10, 15, 20, 25, 30, 35, 40]
-PER_MINUTE_END = 40  # グラフ用に1分ごとの累計を出す範囲(分)
+CHECKPOINTS = list(range(5, 65, 5))  # 5〜60分。軍は40分以降に多く作られるので60分まで(2026/10 ユーザー指摘)
+PER_MINUTE_END = 80  # グラフ用に1分ごとの累計を出す範囲(分)
 
 
 def checkpoints(P, end):
