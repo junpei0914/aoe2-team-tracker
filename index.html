@@ -83,31 +83,33 @@ const REPLAYS = (() => {
 const SEED_REPLAYS = REPLAYS.filter((r) => r.start < REPLAY_SEED_END && (r.winner === "A" || r.winner === "B"));
 
 const CIV_JA = {
+  // 日本語版のゲーム内表記(AoE2DE/resources/jp/strings の文明名)
   Armenians: "アルメニア", Aztecs: "アステカ", Bengalis: "ベンガル", Berbers: "ベルベル", Bohemians: "ボヘミア",
-  Britons: "ブリトン", Bulgarians: "ブルガリア", Burgundians: "ブルゴーニュ", Burmese: "ビルマ", Byzantines: "ビザンチン",
+  Britons: "ブリトン", Bulgarians: "ブルガリア", Burgundians: "ブルゴーニュ", Burmese: "ビルマ", Byzantines: "ビザンティン",
   Celts: "ケルト", Chinese: "中国", Cumans: "クマン", Dravidians: "ドラヴィダ", Ethiopians: "エチオピア",
-  Franks: "フランク", Georgians: "ジョージア", Goths: "ゴート", Gurjaras: "グルジャラ", Hindustanis: "ヒンドゥスターニー",
+  Franks: "フランク", Georgians: "グルジア", Goths: "ゴート", Gurjaras: "グルジャラ", Hindustanis: "ヒンドゥスタン",
   Huns: "フン", Incas: "インカ", Italians: "イタリア", Japanese: "日本", Khmer: "クメール", Koreans: "朝鮮",
   Lithuanians: "リトアニア", Magyars: "マジャール", Malay: "マレー", Malians: "マリ", Maya: "マヤ", Mongols: "モンゴル",
-  Persians: "ペルシア", Poles: "ポーランド", Portuguese: "ポルトガル", Romans: "ローマ", Saracens: "サラセン",
+  Persians: "ペルシア", Poles: "ポーランド", Portuguese: "ポルトガル", Romans: "東ローマ", Saracens: "サラセン",
   Sicilians: "シチリア", Slavs: "スラヴ", Spanish: "スペイン", Tatars: "タタール", Teutons: "チュートン",
-  Turks: "トルコ", Vietnamese: "ベトナム", Vikings: "ヴァイキング",
+  Turks: "オスマン帝国", Vietnamese: "ベトナム", Vikings: "バイキング",
 };
-const MAP_JA = { Arabia: "アラビア", "Green Arabia": "グリーンアラビア", Mongolia: "モンゴリア", Coastal: "沿岸", Yucatan: "ユカタン", Arena: "アリーナ", "Black Forest": "黒い森", Nomad: "ノマド", Hamburger: "ハンバーガー" };
-// 生産命令はアップグレード前のユニット名で記録される(例: Militia = 民兵〜チャンピオン)ので、系統の名前で表示する
+const MAP_JA = { Arabia: "アラビア", "Green Arabia": "グリーンアラビア", Mongolia: "モンゴリア", Coastal: "沿岸", Yucatan: "ユカタン", Arena: "アリーナ", "Black Forest": "大森林", Nomad: "遊牧", Hamburger: "ハンバーガー" };
+// 生産命令はアップグレード前のユニット名で記録される(例: Militia = 民兵〜近衛剣士)ので、系統の名前で表示する。
+// 名前は日本語版のゲーム内表記に合わせている
 const UNIT_JA = {
-  Villager: "村人", Militia: "剣士系", Spearman: "槍兵系", "Eagle Scout": "イーグル系", "Eagle Warrior": "イーグル系",
-  Archer: "弓兵系", Skirmisher: "散兵系", "Cavalry Archer": "騎馬弓兵系", "Hand Cannoneer": "砲撃手",
-  "Scout Cavalry": "斥候騎兵系", Knight: "騎士系", "Camel Rider": "ラクダ騎兵系", "Camel Scout": "ラクダ斥候",
-  "Battle Elephant": "戦象系", "Elite Battle Elephant": "戦象系", "Steppe Lancer": "ステップ槍騎兵",
-  Monk: "修道士", "Battering Ram": "破城槌系", Mangonel: "投石機系", Scorpion: "スコーピオン系",
-  Trebuchet: "トレビュシェット", "Bombard Cannon": "大砲", Petard: "爆破兵", "Trade Cart": "交易馬車",
-  "Fishing Ship": "漁船", Galley: "ガレー系", "Fire Galley": "火炎船系", "Demolition Raft": "爆破船系", "Transport Ship": "輸送船",
-  Samurai: "侍", Huskarl: "ハスカール", Longbowman: "長弓兵", "Woad Raider": "ウォードレイダー", Conquistador: "コンキスタドール",
-  "Plumed Archer": "羽飾り弓兵", "Magyar Huszar": "マジャール軽騎兵", Cataphract: "カタフラクト", "Karambit Warrior": "カランビット兵",
-  Arambai: "アランバイ", Kipchak: "キプチャク", "Elite Kipchak": "キプチャク", Obuch: "オブフ", "Shotel Warrior": "ショテル兵",
-  Mangudai: "マングダイ", Keshik: "ケシク", "Throwing Axeman": "投斧兵", Mameluke: "マムルーク", "Ballista Elephant": "バリスタ象",
-  "Flemish Militia": "フランドル民兵", "Camel Archer": "ラクダ弓兵", "War Elephant": "戦象(ペルシア)",
+  Villager: "町の人", Militia: "民兵系", Spearman: "槍兵系", "Eagle Scout": "イーグル系", "Eagle Warrior": "イーグル系",
+  Archer: "射手系", Skirmisher: "散兵系", "Cavalry Archer": "弓騎兵系", "Hand Cannoneer": "砲撃手",
+  "Scout Cavalry": "斥候系", Knight: "騎士系", "Camel Rider": "らくだ騎兵系", "Camel Scout": "らくだ斥候兵",
+  "Battle Elephant": "バトル エレファント系", "Elite Battle Elephant": "バトル エレファント系", "Steppe Lancer": "ステップ ランサー",
+  Monk: "聖職者", "Battering Ram": "破城槌系", Mangonel: "投石機系", Scorpion: "スコーピオン系",
+  Trebuchet: "遠投投石機", "Bombard Cannon": "大砲", Petard: "爆破工作兵", "Trade Cart": "荷馬車",
+  "Fishing Ship": "漁船", Galley: "ガレー船系", "Fire Galley": "火炎ガレー船系", "Demolition Raft": "爆破工作ボート系", "Transport Ship": "輸送船",
+  Samurai: "武士", Huskarl: "ハスカール", Longbowman: "ロングボウ兵", "Woad Raider": "ウォード レイダー", Conquistador: "コンキスタドール",
+  "Plumed Archer": "羽飾射手", "Magyar Huszar": "マジャール ハサー", Cataphract: "カタフラクト", "Karambit Warrior": "カランビット ウォリア",
+  Arambai: "アランバイ", Kipchak: "キプチャク", "Elite Kipchak": "キプチャク", Obuch: "オブヒ兵", "Shotel Warrior": "ショーテル ウォリア",
+  Mangudai: "マングダイ", Keshik: "ケシク", "Throwing Axeman": "フランカ スロウ", Mameluke: "マムルーク", "Ballista Elephant": "バリスタ エレファント",
+  "Flemish Militia": "フランドル民兵", "Camel Archer": "らくだ弓騎兵", "War Elephant": "エレファント",
 };
 const unitName = (u) => UNIT_JA[u] || u;
 const civName = (c) => CIV_JA[c] || c || "?";
@@ -118,7 +120,7 @@ const UNIT_CATEGORY = [
   { key: "infantry", label: "歩兵", color: "#c07a6f", units: ["Militia", "Spearman", "Eagle Scout", "Eagle Warrior", "Samurai", "Huskarl", "Woad Raider", "Karambit Warrior", "Obuch", "Shotel Warrior", "Throwing Axeman", "Flemish Militia", "Condottiero", "Jaguar Warrior", "Teutonic Knight", "Berserk"] },
   { key: "archer", label: "射撃", color: "#8fa876", units: ["Archer", "Skirmisher", "Cavalry Archer", "Hand Cannoneer", "Longbowman", "Plumed Archer", "Kipchak", "Elite Kipchak", "Mangudai", "Arambai", "Camel Archer", "Chu Ko Nu", "Genoese Crossbowman", "Rattan Archer", "Elephant Archer", "Janissary"] },
   { key: "cavalry", label: "騎兵", color: "#7f9bb5", units: ["Scout Cavalry", "Knight", "Camel Rider", "Camel Scout", "Battle Elephant", "Elite Battle Elephant", "Steppe Lancer", "Conquistador", "Magyar Huszar", "Cataphract", "Keshik", "Mameluke", "War Elephant", "Boyar", "Tarkan", "Leitis", "Coustillier", "Konnik"] },
-  { key: "siege", label: "攻城・その他", color: "#c9a227", units: ["Battering Ram", "Mangonel", "Scorpion", "Trebuchet", "Bombard Cannon", "Petard", "Ballista Elephant", "Monk", "Organ Gun"] },
+  { key: "siege", label: "攻囲兵器・その他", color: "#c9a227", units: ["Battering Ram", "Mangonel", "Scorpion", "Trebuchet", "Bombard Cannon", "Petard", "Ballista Elephant", "Monk", "Organ Gun"] },
 ];
 const NON_MILITARY = new Set(["Villager", "Trade Cart", "Fishing Ship", "Transport Ship", "Trade Cog"]);
 function unitCategory(u) {
@@ -166,6 +168,25 @@ function linkReplays(matches) {
     }
   });
   return links;
+}
+
+// REPLAY_SEED_END 以降の録画のうち、ツールで記録した試合と対応しないものを、試合として扱う(スコアなし)。
+// id はほかの記録と同じく時刻(ミリ秒)。試合の終了時刻にしておくと「今日の試合」の判定にもそのまま使える
+function replayOnlyMatches(links) {
+  const linked = new Set(Object.values(links).map((r) => r.id));
+  return REPLAYS.filter((r) => r.start >= REPLAY_SEED_END && r.winner && !linked.has(r.id)).map((r) => {
+    const [y, mo, d] = r.start.slice(0, 10).split("-").map(Number);
+    return {
+      id: new Date(r.start).getTime() + r.duration * 1000,
+      date: `${y}/${mo}/${d}`,
+      map: mapName(r.map),
+      teamA: r.teamA,
+      teamB: r.teamB,
+      winner: r.winner,
+      source: "replay",
+      replay: r,
+    };
+  });
 }
 
 // 録画からプレイヤーごとの傾向をまとめる(AI1〜5は「AI」に合算)
@@ -421,7 +442,7 @@ function fitScoreModel(scoreTeams, r) {
 const AGE_TIERS = [
   { min: 1650, name: "帝王", jp: "Imperial", color: "#d9b34a", glow: "rgba(217,179,74,0.35)" },
   { min: 1560, name: "城主", jp: "Castle", color: "#c98a4b", glow: "rgba(201,138,75,0.28)" },
-  { min: 1460, name: "封建", jp: "Feudal", color: "#8fa876", glow: "rgba(143,168,118,0.25)" },
+  { min: 1460, name: "領主", jp: "Feudal", color: "#8fa876", glow: "rgba(143,168,118,0.25)" },
   { min: -Infinity, name: "暗黒", jp: "Dark", color: "#8b7a6b", glow: "rgba(139,122,107,0.2)" },
 ];
 function ageTier(elo) {
@@ -1822,7 +1843,7 @@ function AddMatch({ agg, onSave }) {
         <textarea
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
-          placeholder="例: 帝王入り順、誰が中盤で伸びたか、荒らしを受けた人など"
+          placeholder="例: 帝王の時代に入った順、誰が中盤で伸びたか、荒らしを受けた人など"
           rows={3}
           style={{ ...inputStyle, width: "100%", resize: "vertical", fontFamily: "'Inter', sans-serif" }}
         />
@@ -2076,12 +2097,12 @@ const REVIEW_OVERVIEW = [
     body: "これまで過去221戦は「誰が何勝したか」の集計しかなく、味方や相手が誰だったかは平均的な人とみなして推定していました。録画が残っていた33試合はチーム構成まで分かるので、その分を集計から差し引いて入れ直したところ、実力差が以前より大きく出るようになりました(junpei +53、ke_ppy +28、AI −76、haru-s −43、iwsk −33、MJHotcake −32)。AIは強い人と組んで勝っていた分が差し引かれた形です。",
   },
   {
-    title: "時代進化の早さより「村人を作り続けたか」",
-    body: "録画で両チームを比べると、村人を多く作ったチームが39試合中29試合(74%)で勝っています。一方、領主・城主・帝王の時代進化を早く始めたチームの勝率は54〜59%、手押し車や馬の首輪を早く研究したチームは45〜46%と、ほとんど関係がありませんでした。急いで時代を上げるより、村人を途切れさせずに作り続ける方が勝敗に結びついています(ただし、勝っている側は村人を失いにくいので、結果でもある点に注意)。",
+    title: "時代進化の早さより「町の人を作り続けたか」",
+    body: "録画で両チームを比べると、町の人を多く作ったチームが39試合中29試合(74%)で勝っています。一方、領主・城主・帝王の時代への進化を早く始めたチームの勝率は54〜59%、手押し車や引き具を早く研究したチームは45〜46%と、ほとんど関係がありませんでした。急いで時代を上げるより、町の人を途切れさせずに作り続ける方が勝敗に結びついています(ただし、勝っている側は町の人を失いにくいので、結果でもある点に注意)。",
   },
   {
     title: "戦い方は文明でほぼ決まっている",
-    body: "junpei は録画41試合すべて日本、iselo2sei は36試合すべてケルト、MJHotcake は38試合中34試合がスペイン、iwsk は17試合中13試合がブリトンと、毎回同じ文明を使う人が多いです。そのため軍の構成も人によってはっきり分かれ、junpei は歩兵(剣士)76%、iwsk は射撃82%。ke_ppy と ino は文明を使い分けていて、軍も歩兵・騎兵・射撃を混ぜています。",
+    body: "junpei は録画41試合すべて日本、iselo2sei は36試合すべてケルト、MJHotcake は38試合中34試合がスペイン、iwsk は17試合中13試合がブリトンと、毎回同じ文明を使う人が多いです。そのため軍の構成も人によってはっきり分かれ、junpei は歩兵(民兵系)76%、iwsk は射撃82%。ke_ppy と ino は文明を使い分けていて、軍も歩兵・騎兵・射撃を混ぜています。",
   },
   {
     title: "相性はほとんど実力差で説明できる",
@@ -2096,20 +2117,20 @@ const REVIEW_OVERVIEW = [
 const PLAYER_REVIEWS = {
   junpei: {
     type: "剣士で押す軍事型のエース",
-    summary: "推定レート1,870・通算勝率64%でトップ。録画41試合はすべて日本で、軍の76%が歩兵(剣士系が1試合平均180)。城主時代の開始は中央値19:35で全員の中で最も早く、村人の数(平均178)も最多と、内政を回しながら大量の歩兵で押し切るスタイルです。記録試合の平均総合スコアは19,847と断トツ。",
+    summary: "推定レート1,870・通算勝率64%でトップ。録画41試合はすべて日本で、軍の76%が歩兵(民兵系が1試合平均180)。城主の時代の開始は中央値19:35で全員の中で最も早く、町の人の数(平均178)も最多と、内政を回しながら大量の歩兵で押し切るスタイルです。記録試合の平均総合スコアは19,847と断トツ。",
     points: [
       "ino とのペアは58戦で勝率83%(予想70%)。実力を差し引いても +19 が残る、唯一はっきりした好相性",
       "haru-s には直接対決で22勝1敗。一方 ishi_sawada には5勝9敗(予想72%)と負け越している",
-      "馬の首輪(中央値13:44)の研究は全員の中で最も早い",
+      "引き具(中央値13:44)の研究は全員の中で最も早い",
     ],
   },
   ke_ppy: {
     type: "騎兵も使うバランス型",
-    summary: "レート1,683で2位、ino とほぼ同じ水準。文明をよく変え、軍は歩兵50%・騎兵31%と、上位4人の中で最も騎兵の割合が高い(斥候騎兵系を1試合平均33)。スコアも軍事36%・経済32%・技術30%と最もバランスが良く、どの役割でもこなせる調整役です。",
+    summary: "レート1,683で2位、ino とほぼ同じ水準。文明をよく変え、軍は歩兵50%・騎兵31%と、上位4人の中で最も騎兵の割合が高い(斥候系を1試合平均33)。スコアも軍事36%・経済32%・技術30%と最もバランスが良く、どの役割でもこなせる調整役です。",
     points: [
       "録画ではゴートの時が9試合8勝と特に強い(エチオピアは4試合3勝)",
       "iwsk には直接対決で11勝15敗(予想59%)と、実力差のわりに負けている",
-      "手押し車の研究が中央値22:40と上位陣では遅め。早めると村人の数(平均118)をさらに伸ばせそう",
+      "手押し車の研究が中央値22:40と上位陣では遅め。早めると町の人の数(平均118)をさらに伸ばせそう",
     ],
   },
   ino: {
@@ -2123,18 +2144,18 @@ const PLAYER_REVIEWS = {
     ],
   },
   iselo2sei: {
-    type: "村人を厚く作るケルト一筋",
-    summary: "録画36試合はすべてケルト。村人の数は平均169と junpei に次いで多く、手押し車の研究(中央値14:05)は全員の中で最も早い。城主時代の開始(19:51)も junpei に次ぐ2番目で、内政の立ち上がりは上位陣でもトップクラスです。軍は槍兵が中心で、攻城兵器の割合(15%)は上位陣で最も高い。",
+    type: "町の人を厚く作るケルト一筋",
+    summary: "録画36試合はすべてケルト。町の人の数は平均169と junpei に次いで多く、手押し車の研究(中央値14:05)は全員の中で最も早い。城主の時代の開始(19:51)も junpei に次ぐ2番目で、内政の立ち上がりは上位陣でもトップクラスです。軍は槍兵が中心で、攻囲兵器の割合(15%)は上位陣で最も高い。",
     points: [
       "録画では21勝14敗と勝ち越し",
       "MJHotcake には直接対決で24勝10敗(予想59%)と、実力差以上に勝っている",
       "ino(75戦・49%)、ke_ppy(52戦・48%)とのペアはどちらも予想を下回る",
-      "鍛冶屋の攻撃強化(鍛造)を始めるのは中央値51分と遅い。歩兵が多いので早めると効きやすい",
+      "鍛冶場の攻撃力強化(鍛造)を始めるのは中央値51分と遅い。歩兵が多いので早めると効きやすい",
     ],
   },
   iwsk: {
     type: "弓に特化した射撃型",
-    summary: "レート1,494で中間。録画17試合中13試合がブリトンで、軍の82%が弓兵・散兵・長弓兵と極端に射撃寄り。eAPM 25 は ino に次いで高い。ただ録画では3勝13敗と大きく負け越しており、チーム構成が分かったことでレートは1,527から下がりました。城主時代(中央値24:53)は上位陣より3〜5分遅めです。",
+    summary: "レート1,494で中間。録画17試合中13試合がブリトンで、軍の82%が射手・散兵・ロングボウ兵と極端に射撃寄り。eAPM 25 は ino に次いで高い。ただ録画では3勝13敗と大きく負け越しており、チーム構成が分かったことでレートは1,527から下がりました。城主の時代(中央値24:53)は上位陣より3〜5分遅めです。",
     points: [
       "ke_ppy には直接対決で15勝11敗(予想41%)と、相性が良い",
       "junpei とのペアは12戦で勝率83%",
@@ -2143,16 +2164,16 @@ const PLAYER_REVIEWS = {
   },
   MJHotcake: {
     type: "槍兵中心・内政寄り(スペイン)",
-    summary: "レート1,402でAIとほぼ同じ。録画38試合中34試合がスペインで、軍の半分以上が槍兵系(1試合平均55)、騎士やコンキスタドールも使います。スコアは経済42%・技術30%で、軍事は24%と少なめ。時代進化は年々早くなっていて、城主時代の開始は2024年の26:11から2026年は18:57まで縮まりました。",
+    summary: "レート1,402でAIとほぼ同じ。録画38試合中34試合がスペインで、軍の半分以上が槍兵系(1試合平均55)、騎士やコンキスタドールも使います。スコアは経済42%・技術30%で、軍事は24%と少なめ。時代進化は年々早くなっていて、城主の時代の開始は2024年の26:11から2026年は18:57まで縮まりました。",
     points: [
-      "城主時代の開始(中央値): 2024年 26:11 → 2025年 20:34 → 2026年 18:57",
+      "城主の時代の開始(中央値): 2024年 26:11 → 2025年 20:34 → 2026年 18:57",
       "iselo2sei には直接対決で10勝24敗、ishi_sawada には4勝13敗と負け越している",
       "槍兵は騎兵には強いが、弓や歩兵には弱い。相手の構成に合わせて切り替えると軍事面がさらに伸びそう",
     ],
   },
   ishi_sawada: {
-    type: "最近復帰・騎兵と攻城で支える",
-    summary: "しばらく離れていて最近復帰したプレイヤー。通算勝率は69%と高い一方、スコアは平均7,371点と下位で軍事は18%。録画12試合では騎兵36%・攻城16%(破城槌など)で、強い味方の横で建物を壊しに行く役回りが多いようです。城主時代(24:12)や手押し車(24:43)は遅め。",
+    type: "最近復帰・騎兵と攻囲兵器で支える",
+    summary: "しばらく離れていて最近復帰したプレイヤー。通算勝率は69%と高い一方、スコアは平均7,371点と下位で軍事は18%。録画12試合では騎兵36%・攻囲兵器16%(破城槌など)で、強い味方の横で建物を壊しに行く役回りが多いようです。城主の時代(24:12)や手押し車(24:43)は遅め。",
     points: [
       "ino に12勝7敗、junpei に9勝5敗、MJHotcake に13勝4敗と、直接対決ではどの相手にも予想以上に勝っている",
       "録画ではモンゴルの時が7試合6勝",
@@ -2161,19 +2182,19 @@ const PLAYER_REVIEWS = {
   },
   "haru-s": {
     type: "内政中心・成長途中",
-    summary: "通算勝率28%、レートは常連メンバーで最も低い1,151。録画では城主時代の開始が中央値29:28と上位より8〜10分遅く、帝王時代まで行けたのは33試合中10試合だけ。村人の数も平均57と少なめです。スコアも平均4,503点で、経済が46%を占めます。",
+    summary: "通算勝率28%、レートは常連メンバーで最も低い1,151。録画では城主の時代の開始が中央値29:28と上位より8〜10分遅く、帝王の時代まで行けたのは33試合中10試合だけ。町の人の数も平均57と少なめです。スコアも平均4,503点で、経済が46%を占めます。",
     points: [
       "junpei には直接対決で1勝22敗、ishi_sawada には5勝15敗",
-      "城主時代の開始は 2024年 31:08 → 2026年 27:58 と少しずつ早くなっている",
-      "勝敗に一番結びついていたのは村人の数。町の中心で村人を途切れさせずに作るのが一番の伸びしろ",
+      "城主の時代の開始は 2024年 31:08 → 2026年 27:58 と少しずつ早くなっている",
+      "勝敗に一番結びついていたのは町の人の数。町の中心で町の人を途切れさせずに作るのが一番の伸びしろ",
     ],
   },
   urio0042: {
-    type: "経済特化(ビザンチン)",
-    summary: "記録は9戦。録画7試合はすべてビザンチンで、領主時代(中央値14:34)・城主時代(29:31)の開始は全員の中で最も遅く、eAPM も7と最少です。スコアは経済が56%と極端に高く、軍事は10%と全員の中で最も少ない内政重視のスタイルです。",
+    type: "経済特化(ビザンティン)",
+    summary: "記録は9戦。録画7試合はすべてビザンティンで、領主の時代(中央値14:34)・城主の時代(29:31)の開始は全員の中で最も遅く、eAPM も7と最少です。スコアは経済が56%と極端に高く、軍事は10%と全員の中で最も少ない内政重視のスタイルです。",
     points: [
       "試合数が少ないので、今後の記録でレートが大きく動きやすい",
-      "両刃の斧(中央値24:35)など木こりの研究が遅い。領主時代に入ったらすぐ研究すると内政が伸びそう",
+      "両刃斧(中央値24:35)など木こりの研究が遅い。領主の時代に入ったらすぐ研究すると内政が伸びそう",
     ],
   },
   AI: {
@@ -2331,8 +2352,8 @@ function PlayerReviews({ agg }) {
    録画の詳細・録画分析タブ
    ============================================================ */
 const ECO_TECHS = [
-  ["Wheelbarrow", "手押し車"], ["Double-Bit Axe", "両刃の斧"], ["Horse Collar", "馬の首輪"],
-  ["Gold Mining", "金鉱採掘"], ["Hand Cart", "荷車"], ["Bow Saw", "弓のこ"], ["Heavy Plow", "重量犂"],
+  ["Wheelbarrow", "手押し車"], ["Double-Bit Axe", "両刃斧"], ["Horse Collar", "引き具"],
+  ["Gold Mining", "黄金の採掘"], ["Hand Cart", "荷車"], ["Bow Saw", "のこぎり"], ["Heavy Plow", "馬鍬"],
 ];
 const monoSmall = { fontSize: 11, fontFamily: "'JetBrains Mono', monospace", color: "#a89a86" };
 
@@ -2404,7 +2425,7 @@ function ReplayDetail({ replay: r }) {
         </div>
         <div style={{ display: "grid", gridTemplateColumns: cols, gap: 6, ...monoSmall, fontSize: 10, color: "#665c4f", marginTop: 6 }}>
           <span>名前</span><span>文明</span><span>領主 / 城主 / 帝王</span><span style={{ textAlign: "right" }}>eAPM</span>
-          <span style={{ textAlign: "right" }}>村人</span><span>主な軍(生産数)</span>
+          <span style={{ textAlign: "right" }}>町の人</span><span>主な軍(生産数)</span>
         </div>
         {team(r.teamA, "Team A", r.winner === "A")}
         {team(r.teamB, "Team B", r.winner === "B")}
@@ -2466,7 +2487,7 @@ function ReplayAnalysis({ agg }) {
         AoE2 DE の録画ファイル {REPLAYS.length}試合({replayDate(first)}〜{replayDate(last)})から取り出したデータです。
         録画には各プレイヤーの操作だけが入っていて、スコアは入っていません。時代進化は「研究を始めた時刻」(ゲーム内時間)、
         生産数は「キューに入れた数」で、あとで取り消した分や資源不足で作られなかった分も混じるので目安です。
-        剣士系は民兵〜チャンピオンのように、アップグレード後のユニットも含みます。
+        民兵系は民兵〜近衛剣士のように、アップグレード後のユニットも含みます。
       </p>
 
       <h3 style={{ ...h3Style, marginTop: 20 }}>プレイヤー別の傾向(現在のレート順)</h3>
@@ -2492,12 +2513,12 @@ function ReplayAnalysis({ agg }) {
               ) : (<>
               <div style={{ ...small, marginTop: 4 }}>
                 時代進化(中央値): 領主 {fmtTime(median(s.feudal))}・城主 {fmtTime(median(s.castle))}・帝王 {fmtTime(median(s.imperial))}
-                <span style={{ color: "#665c4f" }}>(帝王まで行った試合 {s.imperial.length}/{s.games})</span>
+                <span style={{ color: "#665c4f" }}>(帝王の時代まで行った試合 {s.imperial.length}/{s.games})</span>
                 <br />
-                eAPM {Math.round(median(s.eapm))}・村人 平均{Math.round(s.villagers.reduce((a, b) => a + b, 0) / s.games)}人
+                eAPM {Math.round(median(s.eapm))}・町の人 平均{Math.round(s.villagers.reduce((a, b) => a + b, 0) / s.games)}人
                 {s.techs.Wheelbarrow ? `・手押し車 ${fmtTime(median(s.techs.Wheelbarrow))}` : ""}
-                {s.techs["Double-Bit Axe"] ? `・両刃の斧 ${fmtTime(median(s.techs["Double-Bit Axe"]))}` : ""}
-                {s.techs["Horse Collar"] ? `・馬の首輪 ${fmtTime(median(s.techs["Horse Collar"]))}` : ""}
+                {s.techs["Double-Bit Axe"] ? `・両刃斧 ${fmtTime(median(s.techs["Double-Bit Axe"]))}` : ""}
+                {s.techs["Horse Collar"] ? `・引き具 ${fmtTime(median(s.techs["Horse Collar"]))}` : ""}
                 <br />
                 主な軍: {s.topUnits.map((x) => `${unitName(x.unit)} ${Math.round(x.perGame)}`).join("・")}
                 <span style={{ color: "#665c4f" }}>(1試合あたり)</span>
@@ -2632,14 +2653,16 @@ function MatchScoreDetail({ scores }) {
 }
 
 function MatchHistory({ matches, onDelete, replayLinks = {} }) {
+  const replayOf = (m) => replayLinks[m.id] || m.replay;
   const [confirmId, setConfirmId] = useState(null);
 
   return (
     <div>
       <h2 style={h2Style}>試合履歴</h2>
       <p style={subText}>
-        ここに表示されるのは、あなたやお友達がこのツールから記録した試合です(過去221戦分の元データや、スコア画像から登録した最初の1戦はここには出ません)。
+        ここに表示されるのは、あなたやお友達がこのツールから記録した試合と、録画ファイルから自動で登録した試合です(過去221戦分の元データや、スコア画像から登録した最初の1戦はここには出ません)。
         誤って入力した試合は削除できます。削除するとレート・戦績・相性データも自動で再計算されます。
+        録画から登録した試合はスコアがないので、スコアも残したいときは「試合を記録」から同じ試合を記録すると、そちらに置き換わります。
       </p>
 
       {matches.length === 0 && (
@@ -2658,21 +2681,23 @@ function MatchHistory({ matches, onDelete, replayLinks = {} }) {
                 </div>
                 <div style={{ marginTop: 6, fontFamily: "'Inter', sans-serif", fontSize: 13, color: "#ede4d3" }}>
                   <span style={{ color: m.winner === "A" ? "#8fa876" : "#a89a86" }}>
-                    Team A{m.winner === "A" ? "(勝)" : ""}: {teamWithCivs(m.teamA, replayLinks[m.id])}
+                    Team A{m.winner === "A" ? "(勝)" : ""}: {teamWithCivs(m.teamA, replayOf(m))}
                   </span>
                   <br />
                   <span style={{ color: m.winner === "B" ? "#8fa876" : "#a89a86" }}>
-                    Team B{m.winner === "B" ? "(勝)" : ""}: {teamWithCivs(m.teamB, replayLinks[m.id])}
+                    Team B{m.winner === "B" ? "(勝)" : ""}: {teamWithCivs(m.teamB, replayOf(m))}
                   </span>
                 </div>
                 {m.notes && (
                   <div style={{ marginTop: 6, fontSize: 12, color: "#8b7a6b", fontFamily: "'Inter', sans-serif" }}>{m.notes}</div>
                 )}
                 {m.scores && <MatchScoreDetail scores={m.scores} />}
-                {replayLinks[m.id] && <ReplayToggle replay={replayLinks[m.id]} />}
+                {replayOf(m) && <ReplayToggle replay={replayOf(m)} />}
               </div>
               <div>
-                {confirmId === m.id ? (
+                {m.source === "replay" ? (
+                  <span style={{ fontSize: 11, color: "#8b7a6b", fontFamily: "'Inter', sans-serif", whiteSpace: "nowrap" }}>録画から登録</span>
+                ) : confirmId === m.id ? (
                   <div style={{ display: "flex", gap: 6 }}>
                     <button
                       onClick={() => { onDelete(m.id); setConfirmId(null); }}
@@ -2739,8 +2764,10 @@ function App() {
     persist(matches.filter((m) => m.id !== id));
   };
 
-  const agg = useMemo(() => computeAggregates(matches), [matches]);
   const replayLinks = useMemo(() => linkReplays([...SEED_MATCHES, ...matches]), [matches]);
+  // ツールで記録していない録画の試合も、試合として集計に入れる(スコアなし)
+  const allMatches = useMemo(() => [...matches, ...replayOnlyMatches(replayLinks)].sort((a, b) => a.id - b.id), [matches, replayLinks]);
+  const agg = useMemo(() => computeAggregates(allMatches), [allMatches]);
 
   if (!ready) {
     return <div style={{ padding: 40, color: "#a89a86", fontFamily: "'Inter', sans-serif" }}>読み込み中...</div>;
@@ -2763,7 +2790,7 @@ function App() {
           AOE2 チーム分けトラッカー
         </div>
         <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, color: "#665c4f", marginTop: 2 }}>
-          記録試合数: {matches.length} (シード: 過去221戦・録画: {REPLAYS.length}試合)
+          記録試合数: {allMatches.length}(うち録画から登録 {allMatches.length - matches.length})・シード: 過去221戦・録画: {REPLAYS.length}試合
         </div>
       </div>
 
@@ -2793,8 +2820,8 @@ function App() {
 
       {tab === "board" && <Leaderboard agg={agg} />}
       {tab === "add" && <AddMatch agg={agg} onSave={handleAddMatch} />}
-      {tab === "history" && <MatchHistory matches={matches} onDelete={handleDeleteMatch} replayLinks={replayLinks} />}
-      {tab === "build" && <TeamBuilder agg={agg} matches={matches} />}
+      {tab === "history" && <MatchHistory matches={allMatches} onDelete={handleDeleteMatch} replayLinks={replayLinks} />}
+      {tab === "build" && <TeamBuilder agg={agg} matches={allMatches} />}
       {tab === "synergy" && <Synergy agg={agg} />}
       {tab === "replays" && <ReplayAnalysis agg={agg} />}
       {tab === "review" && <PlayerReviews agg={agg} />}
