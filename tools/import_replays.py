@@ -14,6 +14,7 @@ import inspect
 import io
 import json
 import logging
+import math
 import os
 import re
 import struct
@@ -106,6 +107,15 @@ WINNER_OVERRIDES = {
 }
 MIN_DURATION = 600  # 10分未満はやり直し(リスタート)とみなして取り込まない
 AGES = {"Feudal Age": "feudal", "Castle Age": "castle", "Imperial Age": "imperial"}
+# 時代進化の研究時間(秒、ゲーム内時間)。録画に残るのは研究を始めた(ボタンを押した)時刻なので、
+# これを足して「時代に到達した時刻」にする(ゲーム画面の表示や体感と合わせるため。2026/10 ユーザー指摘)
+AGE_RESEARCH_SEC = {"feudal": 130, "castle": 160, "imperial": 190}
+# 文明ボーナスで時代進化が速い文明(ゲーム内の文明説明から)。マレーは時代進化+66%、
+# ペルシアは町の中心の作業速度が暗黒/領主/城主の時代で+5/10/15%(進化の研究は1つ前の時代に行う)
+AGE_SPEED = {
+    "Malay": {"feudal": 1.66, "castle": 1.66, "imperial": 1.66},
+    "Persians": {"feudal": 1.05, "castle": 1.10, "imperial": 1.15},
+}
 # 保存する研究(経済・鍛冶屋・主なユニットのアップグレード)。全部入れるとデータが大きくなりすぎるため絞る
 TECHS = {
     "Loom", "Wheelbarrow", "Hand Cart", "Double-Bit Axe", "Bow Saw", "Two-Man Saw", "Horse Collar",
@@ -148,6 +158,7 @@ def parse_de(path):
         ps[p.number] = dict(
             raw_name=p.name, civ=p.civilization, team=None, winner=bool(p.winner), eapm=p.eapm,
             ages={}, units=Counter(), buildings=Counter(), techs={}, resign=None,
+            pos=(p.position.x, p.position.y) if p.position else None,
         )
     for i, team in enumerate(m.teams):
         for p in team:
@@ -179,7 +190,7 @@ def parse_de(path):
             P["buildings"][pay["building"]] += 1
         elif kind == "RESIGN":
             P["resign"] = t
-    info = dict(edition="DE", duration=round(m.duration.total_seconds()), map=m.map.name)
+    info = dict(edition="DE", duration=round(m.duration.total_seconds()), map=m.map.name, size=m.map.dimension)
     return info, ps
 
 
@@ -203,6 +214,7 @@ def parse_hd(path):
         ps[p["number"]] = dict(
             raw_name=p["name"], civ=HD_CIV_NAMES.get(civ, civ), team=p["team_id"], winner=bool(p["winner"]),
             eapm=p.get("eapm"), ages={}, units=Counter(), buildings=Counter(), techs={}, resign=None,
+            pos=tuple(p["position"]) if p.get("position") else None,
         )
     with open(path, "rb") as f:
         data = io.BytesIO(f.read())
@@ -233,7 +245,8 @@ def parse_hd(path):
                 P["resign"] = t
     # カスタムマップは日本語環境だと「スタイル: カスタム」のような名前になる
     name = game_map.get("name") or ""
-    info = dict(edition="HD", duration=duration, map="Custom" if game_map.get("custom") or "カスタム" in name else name)
+    info = dict(edition="HD", duration=duration, map="Custom" if game_map.get("custom") or "カスタム" in name else name,
+                size=game_map.get("dimension"))
     return info, ps
 
 
@@ -255,6 +268,48 @@ def infer_winner(ps):
                     P["winner"] = P["team"] in others
                 winner_source = "resign"
     return winner_source
+
+
+def reached_ages(P, end):
+    """研究を始めた時刻 + 研究時間 = 到達した時刻。到達する前に試合が終わった(投了した)時代は除く。
+
+    途中で研究を取り消して押し直した場合は最初に押した時刻から数えるので、実際より早めに出ることがある。
+    """
+    out = {}
+    for age, t in P["ages"].items():
+        at = t + round(AGE_RESEARCH_SEC[age] / AGE_SPEED.get(P["civ"], {}).get(age, 1))
+        if at <= end:
+            out[age] = at
+    return out
+
+
+def assign_roles(ps, size):
+    """開始位置から、各プレイヤーが前衛(両端。flank)か後衛(内側。pocket)かを判定して P["role"] に入れる。
+
+    アラビアなどのチーム戦ではマップの中心を囲む円周上に並び、同じチームは連続した弧を占める。
+    中心から見た角度で並べ、チームの弧の両端の人を前衛、間の人を後衛とする。
+    2人チーム(両方が端)や、敵が弧の中に混ざっている(チームの位置がばらばら)場合は判定しない(None)。
+    """
+    for P in ps.values():
+        P["role"] = None
+    if not size or any(P.get("pos") is None for P in ps.values()):
+        return
+    c = size / 2
+    ang = {n: math.atan2(P["pos"][1] - c, P["pos"][0] - c) for n, P in ps.items()}
+    for team in {P["team"] for P in ps.values()}:
+        mine = sorted((n for n in ps if ps[n]["team"] == team), key=lambda n: ang[n])
+        if len(mine) < 3:
+            continue
+        # 角度の隙間が一番大きいところで切ると、チームの弧が一続きになる
+        gaps = [(ang[mine[(i + 1) % len(mine)]] - ang[mine[i]]) % (2 * math.pi) for i in range(len(mine))]
+        cut = max(range(len(mine)), key=lambda i: gaps[i])
+        arc = mine[cut + 1:] + mine[:cut + 1]
+        start, span = ang[arc[0]], (ang[arc[-1]] - ang[arc[0]]) % (2 * math.pi)
+        enemies = [n for n in ps if ps[n]["team"] != team]
+        if any(0 < (ang[e] - start) % (2 * math.pi) < span for e in enemies):
+            continue
+        for i, n in enumerate(arc):
+            ps[n]["role"] = "flank" if i in (0, len(arc) - 1) else "pocket"
 
 
 def to_record(path, info, ps, winner_source):
@@ -291,6 +346,7 @@ def to_record(path, info, ps, winner_source):
     for P in ps.values():
         if P["raw_name"]:
             P["name"] = NAME_MAP.get(P["raw_name"], P["raw_name"])
+    assign_roles(ps, info.get("size"))
     ordered = [ps[n] for n in sorted(ps)]
     rec = dict(
         id=rec_id,
@@ -306,11 +362,12 @@ def to_record(path, info, ps, winner_source):
             P["name"]: dict(
                 civ=P["civ"],
                 eapm=P["eapm"],
-                ages=P["ages"],
+                ages=reached_ages(P, min(duration, P["resign"]) if P["resign"] is not None else duration),
                 resign=P["resign"],
                 units=dict(P["units"].most_common()),
                 buildings=dict(P["buildings"].most_common()),
                 techs=P["techs"],
+                role=P["role"],
             )
             for P in ordered
         },
