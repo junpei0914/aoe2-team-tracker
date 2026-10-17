@@ -405,12 +405,35 @@ def action_stats(P, end, speed):
     return ac, aw
 
 
+def units_by_age(P, end):
+    """時代ごとに作った(キューに入れた)軍の数: {時代: {ユニット: 数}}。町の人・荷馬車などは除く。
+
+    録画には戦闘の結果が残らないので、その時点で何体残っているかは分からない。代わりに「いつ何を作ったか」で
+    時代ごとの主力の切り替え(城主の時代は騎士、帝王の時代は民兵系など)を見る(2026/10 ユーザー指摘)。HD は空
+    """
+    if not P.get("events"):
+        return None
+    ages = reached_ages(P, end)
+    bounds = [("dark", 0)] + [(age, ages[age]) for age in ("feudal", "castle", "imperial") if age in ages]
+    out = {}
+    for t, kind, name, n in P["events"]:
+        if kind != "unit" or name in NON_MILITARY:
+            continue
+        age = [a for a, start in bounds if start <= t][-1]
+        out.setdefault(age, Counter())[name] += n
+    return {age: dict(c.most_common()) for age, c in out.items()}
+
+
 def action_fields(P, end, speed):
     """記録に書き込む操作の内訳。AI は操作がほとんど録画に残らず数が当てにならないので入れない"""
     if not P["raw_name"]:
         return {}
     ac, aw = action_stats(P, end, speed)
-    return {"ac": ac, "aw": aw} if ac else {}
+    out = {"ac": ac, "aw": aw} if ac else {}
+    ua = units_by_age(P, end)
+    if ua:
+        out["ua"] = ua
+    return out
 
 
 def real_eapm(P, end, speed):
