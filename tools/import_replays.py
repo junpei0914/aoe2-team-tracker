@@ -82,7 +82,32 @@ def patch_queue_action():
     fast.parse_action = parse_action
 
 
+def patch_tribute_action():
+    """mgz 1.8.51 は新しい形式の貢物(DE_TRIBUTE)の手数料の欄(cost[4])を読み飛ばすので、fee として足す。
+
+    並びは 木・食料・金・石(各4バイト) / 手数料(4×4バイト。4つとも同じ値で、30%・貨幣鋳造の後は20%) / …。
+    集めた資源の量の計算で、送った人が払った量(量 × (1 + 手数料))に使う(2026/10 レビューで確認)。
+    """
+    import struct
+    import mgz.fast as fast
+    from mgz.fast.enums import Action
+
+    if getattr(fast.parse_action_71094, "_tribute_patched", False):
+        return
+    original = fast.parse_action_71094
+
+    def parse_action_71094(action_type, player_id, raw):
+        out = original(action_type, player_id, raw)
+        if action_type is Action.DE_TRIBUTE and len(raw) >= 20:
+            out["fee"] = round(struct.unpack_from("<f", raw, 16)[0], 4)
+        return out
+
+    parse_action_71094._tribute_patched = True
+    fast.parse_action_71094 = parse_action_71094
+
+
 patch_queue_action()
+patch_tribute_action()
 import mgz.fast as fast  # noqa: E402
 from mgz.fast.enums import Action, Operation  # noqa: E402
 from mgz.model import parse_match  # noqa: E402
@@ -225,12 +250,15 @@ def parse_de(path):
             ages={}, units=Counter(), buildings=Counter(), techs={}, resign=None,
             pos=(p.position.x, p.position.y) if p.position else None, events=[], prod_cmds=[], age_evidence={},
             age_clicks={}, tech_clicks={}, targets=[],
+            # 集めた資源の量の計算用(gather_fields): 文明の番号(データファイルの並び)、ユニット・研究の番号、建設・壁の命令
+            civ_id=p.civilization_id, ids={"unit": {}, "research": {}}, build_cmds=[],
             # 手元の資源(木・食料・金・石の合計)。ゲームが同期のために録画に書いている値(約6〜14秒ごと)
             stock=[(r.timestamp.total_seconds(), r.total_resources) for r in (p.timeseries or [])],
         )
     for i, team in enumerate(m.teams):
         for p in team:
             ps[p.number]["team"] = i
+    market, tributes = [], []  # 市場の売買・貢物(試合全体。市場の値段は全員の売買で動き、貢物は受け取った人の分も数えるため)
     for a in m.actions:
         pl = getattr(a, "player", None)
         if pl is None or pl.number not in ps:
@@ -252,7 +280,9 @@ def parse_de(path):
             elif tech in TECHS or tech in BLACKSMITH_TECHS:
                 P["tech_clicks"].setdefault(tech, []).append(t)
             ids = pay.get("object_ids") or []
-            P["prod_cmds"].append((t, "research", ids[0] if ids else None, tech))
+            P["prod_cmds"].append((t, "research", ids[0] if ids else None, tech, a.timestamp.total_seconds()))
+            if pay.get("technology_id") is not None:
+                P["ids"]["research"][tech] = pay["technology_id"]
         elif kind in ("DE_QUEUE", "QUEUE") and pay.get("unit"):
             # 同じ sequence の命令が続くことがあるが、sequence はミリ秒単位の時刻で、同じ通信の区切りの中で2回押すと同じ値になる。
             # 開始直後の手元の資源と照らすと本物のクリックだったので、除かない(2026/10 レビューで確認)。
@@ -260,16 +290,33 @@ def parse_de(path):
             # 軍も資源不足で弾かれた予約が残るので、DE の人間は建物ごとの待ち行列の再現(apply_production)で作り始められた分に置き換える
             P["units"][pay["unit"]] += pay.get("amount") or 1
             P["events"].append((t, "unit", pay["unit"], pay.get("amount") or 1))
-            P["prod_cmds"].append((t, "unit", tuple(i for i in (pay.get("object_ids") or []) if i is not None), (pay["unit"], pay.get("amount") or 1)))
+            P["prod_cmds"].append((t, "unit", tuple(i for i in (pay.get("object_ids") or []) if i is not None), (pay["unit"], pay.get("amount") or 1), a.timestamp.total_seconds()))
+            if pay.get("unit_id") is not None:
+                P["ids"]["unit"][pay["unit"]] = pay["unit_id"]
         elif kind == "BUILD" and pay.get("building"):
             P["buildings"][pay["building"]] += 1
             P["events"].append((t, "build", pay["building"], 1))
+            if pay.get("building_id") is not None:
+                P["build_cmds"].append((a.timestamp.total_seconds(), pay["building_id"], 1))
+        elif kind == "WALL" and pay.get("building_id") is not None and a.position is not None:
+            # 壁は始点(position)から終点までの直線。マス数 = 縦横の差の大きい方 + 1
+            tiles = max(abs(pay["x_end"] - a.position.x), abs(pay["y_end"] - a.position.y)) + 1
+            P["build_cmds"].append((a.timestamp.total_seconds(), pay["building_id"], int(tiles)))
+        elif kind in ("SELL", "BUY") and pay.get("resource_id") is not None:
+            market.append((a.timestamp.total_seconds(), pl.number, kind, pay["resource_id"], pay.get("amount") or 100))
+        elif kind == "DE_TRIBUTE":
+            amount = sum(pay.get(k) or 0 for k in ("food", "wood", "stone", "gold"))
+            # 受け取る人は、新しい形式は target_player_id(1バイト)、古い形式は player_id_to
+            to = pay.get("target_player_id", pay.get("player_id_to"))
+            to = to[0] if isinstance(to, (bytes, bytearray)) and to else to
+            if amount > 0:
+                tributes.append((a.timestamp.total_seconds(), pl.number, to, amount, pay.get("fee")))
         elif kind == "RESIGN":
             P["resign"] = t
         elif kind == "SPECIAL" and pay.get("order") == "Unqueue":
             # 生産の取り消し。object_ids には建物ID×256 が入っている(2024/2 以前の録画は建物IDそのもの。slot_id は待ち行列の何番目の枠か)
             for oid in pay.get("object_ids") or []:
-                P["prod_cmds"].append((t, "unqueue", oid, pay.get("slot_id") or 0))
+                P["prod_cmds"].append((t, "unqueue", oid, pay.get("slot_id") or 0, a.timestamp.total_seconds()))
         # その時代に入らないとできない行動の時刻(時代進化の研究がいつまでに終わっていたかの手がかり)。
         # 録画には実際にはできなかった命令も残るので、全部とっておき、ボタンを押した時刻 + 研究時間 より後のものだけ使う(simulate_production)
         name = pay.get("building") if kind == "BUILD" else pay.get("technology") if kind == "RESEARCH" else pay.get("unit") if kind in ("DE_QUEUE", "QUEUE") else None
@@ -279,7 +326,7 @@ def parse_de(path):
     for P in ps.values():
         finish_clicks(P)
     info = dict(edition="DE", duration=round(m.duration.total_seconds()), map=m.map.name, size=m.map.dimension,
-                speed=(m.speed_id or 169) / 100)
+                speed=(m.speed_id or 169) / 100, market=market, tributes=tributes)
     return info, ps
 
 
@@ -536,6 +583,9 @@ def action_fields(P, end, speed):
                 rsa[age] = before[-1]
         if rsa:
             out["rsa"] = rsa
+    if P.get("ga"):
+        out["ga"] = P["ga"]  # 集めた資源の量(1分ごと。gather_fields)
+        out["gs"] = P["gs"]  # 種類ごとの使った量(1分ごと。gather_fields)
     return out
 
 
@@ -559,6 +609,215 @@ def stock_per_minute(P, end):
             vals = prev[-1:] if prev else []
         out.append(round(sum(vals) / len(vals)) if vals else None)
     return out
+
+
+# ---- 集めた資源の量(手元の資源の増減 + 使った量) ----
+COSTS_PATH = os.path.join(ROOT, "tools", "replay_costs.json")  # tools/dump_costs.py がゲームのデータファイルから書き出す
+_COSTS = None
+# 費用を変える効果の属性 → 費用の並び [食料, 木, 石, 金] の位置
+COST_ATTR_INDEX = {100: (0, 1, 2, 3), 103: (0,), 104: (1,), 105: (3,), 106: (2,)}
+MARKET_START, MARKET_STEP, MARKET_MIN, MARKET_MAX = 100, 1.5, 20, 9999  # 市場の値段(100あたりの金)。1回の売買で1.5動く(match_transfers)
+GATHER_TOL = 20  # 払えたかの判定の余裕(手元の資源の見積もりの誤差)
+# 費用が決まっていない研究(密偵/反逆は相手の町の人の数で金が変わる)。押した区間は、集めた量を直前の区間と同じ速さとみなす
+VARIABLE_COST_TECHS = {408}
+
+
+def load_costs():
+    """tools/replay_costs.json(費用の表)。無ければ None(集めた資源の量は出さない)"""
+    global _COSTS
+    if _COSTS is None:
+        if not os.path.exists(COSTS_PATH):
+            _COSTS = False
+        else:
+            with open(COSTS_PATH, encoding="utf-8") as f:
+                _COSTS = json.load(f)
+    return _COSTS or None
+
+
+def civ_cost(C, kind, oid, mods):
+    """ユニット・建物(kind="unit")か研究(kind="research")の費用 [食料, 木, 石, 金]。mods(その時点で効いている費用を変える効果の並び)を反映する"""
+    base = (C["techs"] if kind == "research" else C["units"]).get(str(oid))
+    if base is None:
+        return [0, 0, 0, 0]
+    cost = list(base)
+    cls = C["classes"].get(str(oid))
+
+    def apply(i, mode, v):
+        cost[i] = v if mode == "set" else cost[i] + v if mode == "add" else cost[i] * v
+
+    for cmds in mods:
+        for typ, a, b, c, v in cmds:
+            if kind == "research":
+                # 型101: a=研究, b=資源(-1 は全部), c=0設定・1加算・2掛け算
+                if typ == 101 and a == oid:
+                    for i in ((0, 1, 2, 3) if b < 0 else (b,)):
+                        apply(i, ("set", "add", "mul")[c], v)
+            elif typ != 101 and c in COST_ATTR_INDEX and (a == oid or (a == -1 and b in (-1, cls))):
+                # 型0設定・4加算・5掛け算。a=ユニット(-1 は b の分類のもの全部)
+                for i in COST_ATTR_INDEX[c]:
+                    apply(i, {0: "set", 4: "add", 5: "mul"}[typ], v)
+    return [max(0, x) for x in cost]
+
+
+def research_done(P, C):
+    """研究し終わった時刻 {研究の番号: 時刻}。待ち行列の再現で研究が始まった時刻 + 研究時間(データファイルの値)"""
+    out = {}
+    for it in P.get("prod_items") or []:
+        oid = P["ids"]["research"].get(it["name"]) if it["kind"] == "research" else None
+        if oid is None or it["state"] != "done":
+            continue  # lost(研究していた建物が壊れたなどで失われた)は効果が付いていないので入れない(支払いは gather_fields で数える)
+        t = it["start"] + C["techTime"].get(str(oid), 0)
+        out[oid] = min(out.get(oid, t), t)
+    return out
+
+
+def cost_mods(P, C, done):
+    """費用を変える効果の並び [(効き始める時刻, 効果)]。文明の割引(最初から・時代に到達したとき)と、研究し終わった研究(固有の研究など)"""
+    reach = P.get("reach") or {}
+    out = []
+    for age, cmds in C["civs"].get(str(P["civ_id"]), []):
+        t = 0 if age == "start" else reach.get(age)
+        if t is not None:
+            out.append((t, cmds))
+    out += [(t, C["researchMods"][str(oid)]) for oid, t in done.items() if str(oid) in C["researchMods"]]
+    return sorted(out, key=lambda x: x[0])  # 加算と掛け算が重なると順番で結果が変わるので、効き始めた時刻の順に当てる
+
+
+def match_transfers(ps, info, C, done):
+    """市場の売買・貢物で、各プレイヤーの手元の資源の合計がどれだけ減ったか(増えたら負)。{プレイヤー番号: [(時刻, 量)]}
+
+    市場: 売ると「値段 × (1 − 手数料)」の金が入り、買うと「値段 × (1 + 手数料)」の金を払う(100あたり)。手数料は30%、組合で15%(データファイルの値)。
+    値段は100から始まり、100を売るごとに1.5下がり、買うごとに1.5上がる(20〜9999)。値段は全員の売買で動くとみなす(目安)。
+    動き方は、売買を含む区間322件で、前後の区間の集める速さから逆算した実際の損に最も合うものを選んだ(2026/10。平均絶対誤差:
+    全員で共有・1回1.5 → 124、共有・1回3 → 153、人ごと・1回3 → 183。人ごとだと大量に売るときの損を少なく、共有・3だと値段が下限に
+    張り付いて多く見積もる)。
+    貢物: 送った人は量 × (1 + 手数料)を払い、受けた人には量がそのまま入る。手数料は命令に入っている値(30%、貨幣鋳造で20%、銀行取引で0)。
+    受けた分は集めた量ではないので、受けた人は「使った量」を負にして差し引く。done は {プレイヤー番号: research_done の結果}
+    """
+    out = {n: [] for n in ps}
+    guilds = C["market"]["guilds"]
+    price = {}
+    for t, n, kind, res, amount in sorted(info.get("market") or []):
+        g = done.get(n, {}).get(guilds)
+        fee = C["market"]["guildsFee"] if g is not None and g <= t else C["market"]["fee"]
+        for _ in range(max(1, round(amount / 100))):
+            p = price.get(res, MARKET_START)
+            if kind == "SELL":
+                out[n].append((t, 100 - p * (1 - fee)))
+                price[res] = max(MARKET_MIN, p - MARKET_STEP)
+            else:
+                out[n].append((t, p * (1 + fee) - 100))
+                price[res] = min(MARKET_MAX, p + MARKET_STEP)
+    for t, n, to, amount, fee in info.get("tributes") or []:
+        if fee is None:
+            # 手数料が命令から読めないとき(古い形式)は、貨幣鋳造・銀行取引を研究し終わったかで決める
+            d = done.get(n, {})
+            fee = (C["tribute"]["bankingFee"] if d.get(C["tribute"]["banking"], 1e9) <= t else
+                   C["tribute"]["coinageFee"] if d.get(C["tribute"]["coinage"], 1e9) <= t else C["tribute"]["fee"])
+        out[n].append((t, amount * (1 + fee)))
+        if to in out:
+            out[to].append((t, -amount))
+    return out
+
+
+def gather_fields(P, end, transfers, C, done):
+    """集めた資源の量(木・食料・金・石の合計)の1分ごとの値: [0〜1分, 1〜2分, ...](stock_per_minute と同じ長さ)。
+
+    録画には集めた量は入っていないが、手元の資源の合計(約6〜14秒ごと)と、使った量(予約が通った生産・研究・建設・壁の費用、
+    取り消しの返金、市場・貢物)から、区間ごとに「集めた量 = 手元の資源の増減 + 使った量」で出す。
+    費用は押した時刻(丸める前)に払う。手元の資源の記録は、押した直後のものから支払いが反映されている(2026/10 レビューで確認)。
+    使った量は、建物ごとの待ち行列の再現で弾いた予約を除いたうえで、さらに「手元の資源の見積もり(直前の値 + 直前の区間と同じ速さで
+    集めた分 − その後に使った分)が費用に足りない予約・建設」は資源不足で弾かれたとみなして除く。ただし手元の資源が足りないことは
+    まれで、今の録画では当たらない(連打した予約の多くは、待ち行列の再現の時点で弾いている)。種類ごとの量は分からないので、合計では足りていても種類が足りずに弾かれた分は除けない(多めに出る)。
+    畑の再建(木60)・修理の費用・建て始める前の土台を消したときの返金は命令から分からないので入らない。最初の値(開始約9秒)より前は数えない。
+    密偵/反逆(VARIABLE_COST_TECHS)は費用が決まっていないので、押した区間の集めた量は直前の区間と同じ速さとみなす。
+    done は research_done の結果。戻り値: (1分ごとの値, 払えなかったとみなした件数, 種類ごとの使った量)
+    種類ごとの使った量は {"f": 食料, "w": 木, "s": 石, "g": 金} の1分ごとの並び(1分ごとの値と同じ長さ)で、払った生産・研究・建設・壁の
+    費用から取り消しの返金を引いたもの(押した時刻の1分に入れる。最初の値より前の分も入れる)。市場の売買・貢物は資源の移し替えなので入れず、
+    密偵/反逆の金も費用が分からないので入らない
+    """
+    stock = [(t, v) for t, v in P.get("stock") or [] if t <= end]
+    if len(stock) < 2:
+        return None, 0, None
+    mods = cost_mods(P, C, done)
+    active = lambda t: [cmds for t0, cmds in mods if t0 <= t]
+    events = []  # (時刻, 量, 払えたか確かめるか, 予約の項目, 取り消し元の項目, 種類ごとの量)
+    ids = P["ids"]
+    for it in P.get("prod_items") or []:
+        if it["state"] == "rejected":
+            continue
+        oid = ids["research" if it["kind"] == "research" else "unit"].get(it["name"])
+        if it["kind"] == "research" and oid in VARIABLE_COST_TECHS:
+            events.append((it["tx"], None, False, it, None, None))
+            continue
+        vec = civ_cost(C, it["kind"], oid, active(it["tx"])) if oid is not None else [0, 0, 0, 0]
+        if not sum(vec):
+            continue
+        events.append((it["tx"], sum(vec), True, it, None, vec))
+        if it["state"] == "cancelled":
+            events.append((it["cancel_t"], -sum(vec), False, None, it, [-x for x in vec]))
+    for t, bid, tiles in P.get("build_cmds") or []:
+        vec = [x * tiles for x in civ_cost(C, "unit", bid, active(t))]
+        if sum(vec):
+            events.append((t, sum(vec), True, None, None, vec))
+    events += [(t, v, False, None, None, None) for t, v in transfers]
+    events.sort(key=lambda e: e[0])
+    unpaid = set()
+    paid = []  # 払った(種類ごとの量のある)ものの (時刻, 種類ごとの量)
+    incs = []
+    t0, s0 = stock[0]
+    rate = 0.0
+    spent = 0.0  # 直前の値の後に使った量
+    i = 0
+    while i < len(events) and events[i][0] <= t0:
+        if events[i][5] is not None:
+            paid.append((events[i][0], events[i][5]))  # 最初の値より前の分は、その値に入っている(集めた量には数えない)
+        i += 1
+    for t1, s1 in stock[1:]:
+        unknown = False  # 費用が決まっていない研究を押した区間か
+        while i < len(events) and events[i][0] <= t1:
+            t, v, check, it, refund_of, vec = events[i]
+            i += 1
+            if v is None:
+                unknown = True
+                continue
+            if refund_of is not None and id(refund_of) in unpaid:
+                continue  # 払っていない予約の取り消しは返金もない
+            if check and v > s0 + rate * (t - t0) - spent + GATHER_TOL:
+                unpaid.add(id(it) if it is not None else ("build", t))
+                continue
+            spent += v
+            if vec is not None:
+                paid.append((t, vec))
+        g = rate * (t1 - t0) if unknown else s1 - s0 + spent
+        incs.append((t0, t1, g))
+        rate = max(0.0, g / (t1 - t0)) if t1 > t0 else rate
+        t0, s0, spent = t1, s1, 0.0
+    # 最後の手元の資源の記録より後(試合の終わり・投了まで)の支払いも、種類ごとの使った量には入れる(集めた量には使わない)
+    for t, v, check, it, refund_of, vec in events[i:]:
+        if t > end or vec is None or (refund_of is not None and id(refund_of) in unpaid):
+            continue
+        paid.append((t, vec))
+    last = min(PER_MINUTE_END, int(end // 60))
+    pm = [0.0] * last
+    for a, b, g in incs:
+        # 区間の量を、かかっている1分ごとに時間で按分する
+        t = a
+        while t < b:
+            m_ = int(t // 60)
+            nxt = min(b, (m_ + 1) * 60)
+            if m_ < last:
+                pm[m_] += g * (nxt - t) / (b - a)
+            t = nxt
+    first_min = int(stock[0][0] // 60)
+    by_type = [[0.0] * last for _ in range(4)]
+    for t, vec in paid:
+        m_ = int(t // 60)
+        if m_ < last:
+            for k in range(4):
+                by_type[k][m_] += vec[k]
+    gs = {key: [round(x) for x in by_type[k]] for k, key in enumerate(("f", "w", "s", "g"))}
+    return [None if m_ < first_min else round(v) for m_, v in enumerate(pm)], len(unpaid), gs
 
 
 def real_eapm(P, end, speed):
@@ -726,14 +985,14 @@ def simulate_production(P, end):
         return None
     # 町の中心かどうか(町の人か町の中心の研究を予約した建物)
     tc_ids = set()
-    for t, kind, target, arg in cmds:
+    for t, kind, target, arg, *_ in cmds:
         if kind == "unit" and arg[0] == "Villager":
             tc_ids.update(target)
         elif kind == "research" and target is not None and (arg in AGES or arg in TC_TECH_SEC):
             tc_ids.add(target)
     # 時代進化の研究を押した時刻(取り消しの解釈で、押し直しがあるかを見るため)
     age_click_times = {}
-    for t, kind, target, arg in cmds:
+    for t, kind, target, arg, *_ in cmds:
         if kind == "research" and arg in AGES:
             age_click_times.setdefault(arg, []).append(t)
     evidence = P.get("age_evidence") or {}
@@ -783,6 +1042,7 @@ def simulate_production(P, end):
         elif item in b["queue"]:
             b["queue"].remove(item)
         item["state"] = state
+        item["cancel_t"] = now[0]  # 取り消した時刻(丸める前。資源が戻る。集めた資源の量の計算で使う)
 
     def valid_evidence(age, click):
         """ボタンを押した時刻 + 研究時間 より後の、その時代でしかできない最初の行動の時刻(なければ None)。
@@ -807,14 +1067,16 @@ def simulate_production(P, end):
             cancel(b, t, pending[-1], "rejected")
 
     queued = {}  # 研究名 -> 予約中の項目(待ち行列か作っている最中)
-    for t, kind, target, arg in cmds:
+    now = [0.0]  # 処理中の命令の丸める前の時刻(取り消した時刻に使う)
+    for t, kind, target, arg, tx in cmds:
+        now[0] = tx
         if t > end:
             break
         if kind == "unit":
             name, amount = arg
             ids = [i for i in target if i is not None]
             for _ in range(amount):
-                item = dict(kind="unit", name=name, t=t, start=None, end=None, state="queued")
+                item = dict(kind="unit", name=name, t=t, tx=tx, start=None, end=None, state="queued")
                 items.append(item)
                 if name == "Villager" and t < START_WINDOW:
                     # 開始直後は、開始時の食料で払える分まで
@@ -849,7 +1111,7 @@ def simulate_production(P, end):
                 else:
                     # 待ち行列か研究中に押し直している = 前の予約は弾かれたか取り消した
                     cancel(prev["bld"], t, prev, "rejected")
-            item = dict(kind="research", name=arg, t=t, start=None, end=None, state="queued")
+            item = dict(kind="research", name=arg, t=t, tx=tx, start=None, end=None, state="queued")
             items.append(item)
             queued[arg] = item
             b = bld(target, t)
@@ -911,6 +1173,7 @@ def simulate_production(P, end):
     started = [(round(i["start"]), i["name"]) for i in items if i["kind"] == "unit" and i["state"] == "done" and i["start"] <= end]
     started += [(i["t"], i["name"]) for i in no_bld_units]
     return {
+        "items": items,
         "f": sorted(round(b["first"]) for b in blds.values() if b["tc"]),
         "i": sorted(out_idle),
         "units": sorted(started),
@@ -932,6 +1195,7 @@ def apply_production(P, end):
     if res["f"]:
         P["tc_result"] = {"f": res["f"], "i": res["i"]}
     P["reach"] = res["reach"]
+    P["prod_items"] = res["items"]
     P["prod_rejected"] = res["rejected"]
     P["prod_unstarted"] = res["unstarted"]
     P["events"] = [e for e in P["events"] if e[1] != "unit"] + [(t, "unit", name, 1) for t, name in res["units"]]
@@ -977,6 +1241,14 @@ def to_record(path, info, ps, winner_source):
     for P in ps.values():
         if P["raw_name"] and P.get("prod_cmds"):
             apply_production(P, min(duration, P["resign"]) if P["resign"] is not None else duration)
+    # 集めた資源の量(DE の人間のみ。待ち行列の再現の結果を使うので、その後に行う)
+    C = load_costs() if info["edition"] == "DE" else None
+    if C:
+        done = {n: research_done(P, C) for n, P in ps.items() if P.get("prod_items")}
+        transfers = match_transfers(ps, info, C, done)
+        for n, P in ps.items():
+            if P["raw_name"] and P.get("stock"):
+                P["ga"], P["ga_unpaid"], P["gs"] = gather_fields(P, min(duration, P["resign"]) if P["resign"] is not None else duration, transfers[n], C, done.get(n, {}))
     ordered = [ps[n] for n in sorted(ps)]
     rec = dict(
         id=rec_id,
@@ -1080,6 +1352,9 @@ def main():
         print(f"録画が見つかりません: {', '.join(folders)}")
         return 1
     records = []
+    unpaid = 0
+    if load_costs() is None:
+        print(f"  ※費用の表({COSTS_PATH})が無いので、集めた資源の量は出しません(tools/dump_costs.py で作る)")
     for path in files:
         name = os.path.basename(path)
         try:
@@ -1097,9 +1372,10 @@ def main():
               f" A:{'/'.join(rec['teamA'])} B:{'/'.join(rec['teamB'])}"
               + (f"  ※名簿にない名前: {', '.join(unknown)}" if unknown else ""))
         records.append(rec)
+        unpaid += sum(P.get("ga_unpaid") or 0 for P in ps.values())
     records.sort(key=lambda r: r["start"])
     write_index(records)
-    print(f"{len(records)}試合を index.html に書き込みました")
+    print(f"{len(records)}試合を index.html に書き込みました(集めた資源の量で、手元の資源が足りず払えなかったとみなした予約・建設 {unpaid}件)")
     return 0
 
 
