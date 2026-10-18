@@ -121,12 +121,66 @@ AGE_SPEED = {
     "Malay": {"feudal": 1.66, "castle": 1.66, "imperial": 1.66},
     "Persians": {"feudal": 1.05, "castle": 1.10, "imperial": 1.15},
 }
-# 町の中心の生産時間(秒、ゲーム内時間)。町の中心が空いていた時間を出すために、待ち行列を再現する(simulate_tcs)
+# 町の中心の生産時間(秒、ゲーム内時間)。町の中心が空いていた時間を出すために、待ち行列を再現する(simulate_production)
 VILLAGER_SEC = 25
 TC_TECH_SEC = {"Loom": 25, "Wheelbarrow": 75, "Hand Cart": 55, "Town Watch": 25, "Town Patrol": 40}
 # 町の中心の作業速度が速い文明(ゲーム内の文明説明から)。ペルシアは暗黒/領主/城主/帝王の時代で +5/10/15/20%
 TC_SPEED = {"Persians": [1.05, 1.10, 1.15, 1.20]}
 TC_IDLE_END = 45 * 60  # 空いていた時間はこの時刻まで保存する(人口が埋まった後の空きは問題にならないため)
+# 町の中心の研究の時間が文明で違うもの(ゲーム内の文明説明から): ゴートは機織りが即時、ベトナムは経済のアップグレードが+100%速い
+TC_TECH_SPEED = {"Goths": {"Loom": None}, "Vietnamese": {"Wheelbarrow": 2.0, "Hand Cart": 2.0}}
+# 開始時の食料(標準の開始資源 木200・食料200・金100・石200 から文明ボーナスで変わるもの。ゲーム内の文明説明から)。
+# 開始直後は食料が入ってこないので、予約できる町の人はこの食料の分まで。それを超えて連打した分は資源不足で弾かれている
+START_FOOD = {"Chinese": 0, "Persians": 250, "Maya": 150, "Lithuanians": 300}
+START_FOOD_DEFAULT = 200
+START_WINDOW = 20  # 最初に食料が入るまでの秒数(これより前の予約は開始時の食料で払う)
+# その時代に入らないとできない行動(建物・研究・ユニット)。録画にこれが出た時刻には時代進化が終わっているので、
+# 時代進化の研究はその時刻 − 研究時間 までに始まっている。再現した待ち行列がそれに間に合わなければ、
+# 前に並んでいる町の人の予約の一部は資源不足で弾かれていた(作られていない)とみなす(2026/10 レビューで指摘)
+AGE_GATED_BUILD = {
+    "Archery Range": "feudal", "Stable": "feudal", "Market": "feudal", "Blacksmith": "feudal", "Watch Tower": "feudal",
+    # 町の中心は外す(まだ建てられない時代の建設命令も録画に残っていた。2026/10 再レビューで指摘)
+    "Castle": "castle", "University": "castle", "Monastery": "castle", "Siege Workshop": "castle",
+    "Bombard Tower": "imperial", "Keep": "imperial",
+}
+AGE_GATED_TECH = {
+    "Double-Bit Axe": "feudal", "Horse Collar": "feudal", "Wheelbarrow": "feudal", "Gold Mining": "feudal", "Stone Mining": "feudal",
+    "Man-at-Arms": "feudal", "Fletching": "feudal", "Forging": "feudal", "Scale Mail Armor": "feudal", "Scale Barding Armor": "feudal",
+    "Padded Archer Armor": "feudal", "Bloodlines": "feudal", "Town Watch": "feudal",
+    "Bow Saw": "castle", "Heavy Plow": "castle", "Hand Cart": "castle", "Long Swordsman": "castle", "Pikeman": "castle",
+    "Crossbowman": "castle", "Elite Skirmisher": "castle", "Light Cavalry": "castle", "Iron Casting": "castle",
+    "Chain Mail Armor": "castle", "Chain Barding Armor": "castle", "Leather Archer Armor": "castle", "Bodkin Arrow": "castle",
+    "Squires": "castle", "Ballistics": "castle", "Masonry": "castle", "Town Patrol": "castle",
+    "Two-Handed Swordsman": "imperial", "Champion": "imperial", "Halberdier": "imperial", "Arbalester": "imperial",
+    "Cavalier": "imperial", "Hussar": "imperial", "Blast Furnace": "imperial", "Plate Mail Armor": "imperial",
+    "Plate Barding Armor": "imperial", "Ring Archer Armor": "imperial", "Bracer": "imperial", "Two-Man Saw": "imperial",
+    "Crop Rotation": "imperial", "Conscription": "imperial", "Siege Ram": "imperial", "Onager": "imperial",
+}
+AGE_GATED_UNIT = {
+    "Archer": "feudal", "Skirmisher": "feudal", "Spearman": "feudal", "Scout Cavalry": "feudal",
+    "Knight": "castle", "Monk": "castle", "Mangonel": "castle", "Scorpion": "castle", "Camel Rider": "castle", "Cavalry Archer": "castle",
+    "Hand Cannoneer": "imperial", "Bombard Cannon": "imperial",
+}
+# 文明ボーナスで早い時代からできるもの(ゲーム内の文明説明から。手がかりに使わない)。
+# クマンは領主の時代に攻城兵器工房と破城槌、ブルゴーニュは経済のアップグレードを1つ前の時代に研究でき、重騎士も城主の時代に研究できる
+AGE_GATED_EXCEPT = {
+    "Cumans": {"Siege Workshop", "Battering Ram"},
+    "Burgundians": {"Double-Bit Axe", "Horse Collar", "Wheelbarrow", "Gold Mining", "Stone Mining", "Bow Saw", "Heavy Plow",
+                    "Hand Cart", "Two-Man Saw", "Crop Rotation", "Gold Shaft Mining", "Stone Shaft Mining", "Cavalier"},
+}
+# 同じボタンをこの秒数より短い間隔で押したものは、1回の操作(連打)とみなす
+CLICK_BURST = 2
+# 軍などの生産時間(秒、ゲーム内時間。標準の値)。建物ごとの待ち行列を再現して、試合が終わるまでに作り始められない予約を除くのに使う。
+# 文明ボーナスや徴用で速くなる分は MIL_SPEED_FACTOR でまとめて甘めに見る(作れなかったと言い切れるものだけ除くため)
+UNIT_TRAIN_SEC = {
+    "Militia": 21, "Spearman": 22, "Eagle Scout": 60, "Eagle Warrior": 35, "Archer": 35, "Skirmisher": 22, "Cavalry Archer": 34,
+    "Hand Cannoneer": 34, "Scout Cavalry": 30, "Knight": 30, "Camel Rider": 22, "Camel Scout": 22, "Battle Elephant": 24,
+    "Steppe Lancer": 24, "Battering Ram": 36, "Mangonel": 46, "Scorpion": 30, "Trebuchet": 50, "Bombard Cannon": 56, "Monk": 51,
+    "Trade Cart": 51, "Fishing Ship": 40, "Transport Ship": 45, "Galley": 60, "Fire Galley": 65, "Demolition Raft": 45, "Petard": 25,
+}
+UNIT_TRAIN_DEFAULT = 20  # 表にない固有ユニットなど(短めにして甘く見る)
+MIL_SPEED_FACTOR = 0.8
+QUEUE_MAX = 15  # 1つの建物の待ち行列に入る数(ゲームの上限)
 # 保存する研究(経済・鍛冶屋・主なユニットのアップグレード)。全部入れるとデータが大きくなりすぎるため絞る
 TECHS = {
     "Loom", "Wheelbarrow", "Hand Cart", "Double-Bit Axe", "Bow Saw", "Two-Man Saw", "Horse Collar",
@@ -169,14 +223,14 @@ def parse_de(path):
         ps[p.number] = dict(
             raw_name=p.name, civ=p.civilization, team=None, winner=bool(p.winner), actions=0, acts=[],
             ages={}, units=Counter(), buildings=Counter(), techs={}, resign=None,
-            pos=(p.position.x, p.position.y) if p.position else None, events=[], tc_cmds=[],
+            pos=(p.position.x, p.position.y) if p.position else None, events=[], prod_cmds=[], age_evidence={},
+            age_clicks={}, tech_clicks={},
             # 手元の資源(木・食料・金・石の合計)。ゲームが同期のために録画に書いている値(約6〜14秒ごと)
             stock=[(r.timestamp.total_seconds(), r.total_resources) for r in (p.timeseries or [])],
         )
     for i, team in enumerate(m.teams):
         for p in team:
             ps[p.number]["team"] = i
-    seen = set()
     for a in m.actions:
         pl = getattr(a, "player", None)
         if pl is None or pl.number not in ps:
@@ -190,37 +244,38 @@ def parse_de(path):
         kind = a.type.name
         if kind == "RESEARCH":
             tech = pay.get("technology")
+            # 研究を押した時刻は全部とっておき、最後にまとめて決める(last_burst)
             if tech in AGES:
-                P["ages"].setdefault(AGES[tech], t)
-            elif tech in TECHS:
-                P["techs"].setdefault(tech, t)
-            if tech in BLACKSMITH_TECHS:
-                P["events"].append((t, "bs", tech, 1))
+                P["age_clicks"].setdefault(AGES[tech], []).append(t)
+            elif tech in TECHS or tech in BLACKSMITH_TECHS:
+                P["tech_clicks"].setdefault(tech, []).append(t)
+            ids = pay.get("object_ids") or []
+            P["prod_cmds"].append((t, "research", ids[0] if ids else None, tech))
         elif kind in ("DE_QUEUE", "QUEUE") and pay.get("unit"):
-            # 同じ命令が二重に記録されていることがあるので除く
-            key = (pl.number, pay.get("sequence"), tuple(pay.get("object_ids") or []), pay.get("unit"))
-            if key in seen:
-                continue
-            seen.add(key)
-            # 複数の建物を選んで生産しても、DEでは1回の命令で amount 体を空いている建物に振り分ける
+            # 同じ sequence の命令が続くことがあるが、sequence はミリ秒単位の時刻で、同じ通信の区切りの中で2回押すと同じ値になる。
+            # 開始直後の手元の資源と照らすと本物のクリックだったので、除かない(2026/10 レビューで確認)。
+                        # 複数の建物を選んで生産しても、DEでは1回の命令で amount 体を空いている建物に振り分ける
+            # 軍も資源不足で弾かれた予約が残るので、DE の人間は建物ごとの待ち行列の再現(apply_production)で作り始められた分に置き換える
             P["units"][pay["unit"]] += pay.get("amount") or 1
             P["events"].append((t, "unit", pay["unit"], pay.get("amount") or 1))
+            P["prod_cmds"].append((t, "unit", tuple(i for i in (pay.get("object_ids") or []) if i is not None), (pay["unit"], pay.get("amount") or 1)))
         elif kind == "BUILD" and pay.get("building"):
             P["buildings"][pay["building"]] += 1
             P["events"].append((t, "build", pay["building"], 1))
         elif kind == "RESIGN":
             P["resign"] = t
         elif kind == "SPECIAL" and pay.get("order") == "Unqueue":
-            # 生産の取り消し。object_ids には建物ID×256 が入っている(slot_id は待ち行列の何番目の枠か)
+            # 生産の取り消し。object_ids には建物ID×256 が入っている(2024/2 以前の録画は建物IDそのもの。slot_id は待ち行列の何番目の枠か)
             for oid in pay.get("object_ids") or []:
-                P["tc_cmds"].append((t, "unqueue", oid >> 8, pay.get("slot_id") or 0))
-        if kind in ("DE_QUEUE", "QUEUE") and pay.get("unit") == "Villager" or kind == "RESEARCH" and (
-                pay.get("technology") in AGES or pay.get("technology") in TC_TECH_SEC):
-            ids = pay.get("object_ids") or []
-            if kind == "RESEARCH":
-                P["tc_cmds"].append((t, "research", ids[0] if ids else None, pay["technology"]))
-            else:
-                P["tc_cmds"].append((t, "unit", tuple(ids), pay.get("amount") or 1))
+                P["prod_cmds"].append((t, "unqueue", oid, pay.get("slot_id") or 0))
+        # その時代に入らないとできない行動の時刻(時代進化の研究がいつまでに終わっていたかの手がかり)。
+        # 録画には実際にはできなかった命令も残るので、全部とっておき、ボタンを押した時刻 + 研究時間 より後のものだけ使う(simulate_production)
+        name = pay.get("building") if kind == "BUILD" else pay.get("technology") if kind == "RESEARCH" else pay.get("unit") if kind in ("DE_QUEUE", "QUEUE") else None
+        gated = (AGE_GATED_BUILD if kind == "BUILD" else AGE_GATED_TECH if kind == "RESEARCH" else AGE_GATED_UNIT).get(name) if name else None
+        if gated and name not in AGE_GATED_EXCEPT.get(P["civ"], ()):
+            P["age_evidence"].setdefault(gated, []).append(t)
+    for P in ps.values():
+        finish_clicks(P)
     info = dict(edition="DE", duration=round(m.duration.total_seconds()), map=m.map.name, size=m.map.dimension,
                 speed=(m.speed_id or 169) / 100)
     return info, ps
@@ -246,7 +301,7 @@ def parse_hd(path):
         civ = dataset["civilizations"].get(str(p["civilization"]), {}).get("name")
         ps[p["number"]] = dict(
             raw_name=p["name"], civ=HD_CIV_NAMES.get(civ, civ), team=p["team_id"], winner=bool(p["winner"]),
-            actions=0, acts=[], ages={}, units=Counter(), buildings=Counter(), techs={}, resign=None,
+            actions=0, acts=[], ages={}, units=Counter(), buildings=Counter(), techs={}, resign=None, age_clicks={}, tech_clicks={},
             pos=tuple(p["position"]) if p.get("position") else None,
         )
     with open(path, "rb") as f:
@@ -273,12 +328,15 @@ def parse_hd(path):
                 P["acts"].append((t, ACTION_CATEGORY.get(kind.name, OTHER_CATEGORY)))
             if kind == Action.RESEARCH:
                 tech = dataset["technologies"].get(str(pay.get("technology_id")))
+                # DE と同じく、押した時刻は全部とっておき最後の操作を使う(finish_clicks)
                 if tech in AGES:
-                    P["ages"].setdefault(AGES[tech], t)
+                    P["age_clicks"].setdefault(AGES[tech], []).append(t)
                 elif tech in TECHS:
-                    P["techs"].setdefault(tech, t)
+                    P["tech_clicks"].setdefault(tech, []).append(t)
             elif kind == Action.RESIGN:
                 P["resign"] = t
+    for P in ps.values():
+        finish_clicks(P, with_events=False)  # HD は生産が取れないので、途中経過(events)は作らない
     # カスタムマップは日本語環境だと「スタイル: カスタム」のような名前になる
     name = game_map.get("name") or ""
     info = dict(edition="HD", duration=duration, map="Custom" if game_map.get("custom") or "カスタム" in name else name,
@@ -330,7 +388,7 @@ def checkpoints(P, end):
     out = {}
     if not P.get("events"):
         return out
-    tc_first = ((simulate_tcs(P, end) or {}).get("f") or [0])[1:]
+    tc_first = ((P.get("tc_result") or {}).get("f") or [0])[1:]
     for cp in CHECKPOINTS:
         lim = cp * 60
         if lim > end:
@@ -459,9 +517,8 @@ def action_fields(P, end, speed):
     ua = units_by_age(P, end)
     if ua:
         out["ua"] = ua
-    tc = simulate_tcs(P, end)
-    if tc:
-        out["tc"] = tc
+    if P.get("tc_result"):
+        out["tc"] = P["tc_result"]
     rs = stock_per_minute(P, end)
     if rs:
         out["rs"] = rs
@@ -512,16 +569,14 @@ def real_eapm(P, end, speed):
 
 
 def reached_ages(P, end):
-    """研究を始めた時刻 + 研究時間 = 到達した時刻。到達する前に試合が終わった(投了した)時代は除く。
+    """時代に到達した時刻。到達する前に試合が終わった(投了した)時代は除く。
 
-    途中で研究を取り消して押し直した場合は最初に押した時刻から数えるので、実際より早めに出ることがある。
+    建物ごとの待ち行列の再現ができた人(DE の人間)は、待ち行列で研究の開始が遅れた分も入れた時刻(apply_production の reach)。
+    時代進化の研究は待ち行列の後ろに入るので、前に町の人が並んでいるとボタンを押した時刻 + 研究時間 より遅く到達する(2026/10 レビューで指摘)。
+    それ以外(HD・AI)は、ボタンを押した時刻(時間をあけて押し直していれば最後の操作。last_burst) + 研究時間。待ち行列で研究の開始が遅れた分は入らない。
     """
-    out = {}
-    for age, t in P["ages"].items():
-        at = t + round(AGE_RESEARCH_SEC[age] / AGE_SPEED.get(P["civ"], {}).get(age, 1))
-        if at <= end:
-            out[age] = at
-    return out
+    src = P["reach"] if P.get("reach") is not None else clicked_reach(P)
+    return {age: at for age, at in src.items() if at <= end}
 
 
 def assign_roles(ps, size):
@@ -554,112 +609,298 @@ def assign_roles(ps, size):
 
 
 def tc_speed(P, t):
-    """時刻 t での町の中心の作業速度の倍率(ペルシアは時代ごとに速くなる)"""
+    """時刻 t での町の中心の作業速度の倍率(ペルシアは時代ごとに速くなる)。時代はボタンを押した時刻 + 研究時間で見る"""
     rates = TC_SPEED.get(P["civ"])
     if not rates:
         return 1
-    ages = reached_ages(P, 10 ** 9)
+    ages = clicked_reach(P)
     i = sum(1 for age in ("feudal", "castle", "imperial") if age in ages and ages[age] <= t)
     return rates[i]
 
 
-def simulate_tcs(P, end):
-    """町の中心ごとの待ち行列を再現して、町の中心が空いていた時間と、使っていた町の中心を返す。
+def age_research_sec(P, age):
+    return AGE_RESEARCH_SEC[age] / AGE_SPEED.get(P["civ"], {}).get(age, 1)
+
+
+def clicked_reach(P):
+    """ボタンを押した時刻 + 研究時間(待ち行列で研究の開始が遅れた分は入らない)"""
+    return {age: t + round(age_research_sec(P, age)) for age, t in P["ages"].items()}
+
+
+def last_burst(times):
+    """同じ研究のボタンを押した時刻の並びから、最後の操作の時刻を返す。
+
+    研究は一度予約するとボタンが消えるので、時間をあけて押し直しているなら、前の予約は取り消したか資源不足で弾かれている。
+    そこで最後の操作(CLICK_BURST 秒より短い間隔の連打は1回とみなし、その最初)の時刻を使う(2026/10 再レビューで指摘。
+    以前は最初に押した時刻で、取り消して押し直した研究が早く出ていた)。
+    """
+    times = sorted(times)
+    start = times[0]
+    for prev, cur in zip(times, times[1:]):
+        if cur - prev >= CLICK_BURST:
+            start = cur
+    return start
+
+
+def finish_clicks(P, with_events=True):
+    """研究・時代進化を押した時刻を決め、鍛冶場の研究の記録を作る"""
+    P["ages"] = {age: last_burst(ts) for age, ts in P["age_clicks"].items()}
+    P["techs"] = {tech: last_burst(ts) for tech, ts in P["tech_clicks"].items() if tech in TECHS}
+    if with_events:
+        P["events"] += [(last_burst(ts), "bs", tech, 1) for tech, ts in P["tech_clicks"].items() if tech in BLACKSMITH_TECHS]
+
+
+def item_duration(P, item, start):
+    """待ち行列の1件にかかる秒数(ゲーム内時間)"""
+    kind, name = item["kind"], item["name"]
+    if kind == "research":
+        if name in AGES:
+            return age_research_sec(P, AGES[name])
+        if name in TC_TECH_SEC:
+            speed = TC_TECH_SPEED.get(P["civ"], {}).get(name, 1)
+            return 0 if speed is None else TC_TECH_SEC[name] / speed / tc_speed(P, start)
+        return 0  # そのほかの研究は時間が分からないので、待ち行列を止めない扱い(甘めに見る)
+    if name == "Villager":
+        return VILLAGER_SEC / tc_speed(P, start)
+    return UNIT_TRAIN_SEC.get(name, UNIT_TRAIN_DEFAULT) * MIL_SPEED_FACTOR
+
+
+def simulate_production(P, end):
+    """建物ごとの待ち行列を再現する。町の中心の空き時間・使っていた町の中心・作り始めたユニット・時代に到達した時刻を返す。
 
     録画に残るのは「予約した時刻」だけなので、まとめて予約すると5分ごとの数がずれ、時代進化・手押し車などの研究中に
-    作れない時間も分からない(2026/10 ユーザー指摘)。そこで町の中心ごとに「予約 → 先頭から順に作る(町の人25秒、
-    研究はその研究時間) → 取り消しは待ち行列から外す」を並べ、待ち行列が空だった区間を「空いていた時間」とする。
-    予約した時点で資源は払われているので、作られなかったのは取り消しか人口の上限(家が足りない)の場合だけ。
-    人口の上限で止まっていた時間は録画から分からないので、生産していた扱いになる(空き時間は少なめに出る)。
-    町の中心は、町の人か町の中心の研究を最初に予約した時刻から数える(建て終わった時刻は録画に残らない)。
-    最初の町の中心は0秒から。最後に使った後(壊された・人口が埋まったなど)は数えない。
+    作れない時間も分からない(2026/10 ユーザー指摘)。そこで建物ごとに「予約 → 先頭から順に作る(町の人25秒、研究・軍は
+    それぞれの時間) → 取り消しは待ち行列から外す」を並べる。町の中心の待ち行列が空だった区間を「空いていた時間」とする。
 
-    戻り値: {"f": [各町の中心を最初に使った時刻], "i": [[空き始め, 空き終わり], ...]}(TC_IDLE_END 秒まで、町の中心ごとの区間を合わせて並べたもの)
+    資源が足りずに弾かれた予約も録画に残る(連打すると多い)。食料などの量は録画に入っていないので、次の手がかりで弾く(2026/10 レビューで指摘):
+    ・町の人: 開始直後(START_WINDOW 秒まで)は食料が入ってこないので、開始時の食料(START_FOOD)で払える数まで
+    ・町の人: その時代でしかできない行動(AGE_GATED_*)が出た時刻には時代進化が終わっている。時代進化の研究がそれに間に合わない
+      待ち行列なら、前に並ぶ町の人の予約のうち新しいものから弾かれていたとみなす(fit_age_deadline)
+    ・研究: 一度予約するとボタンが消えるので、時間をあけて同じ研究を押し直したら、前の予約は弾かれたか取り消したとみなす
+    ・軍など: 試合が終わる(投了する)までに作り始められない予約は作られていない。生産時間は甘め(MIL_SPEED_FACTOR)に見るので、
+      除くのは「作れなかったと言い切れる分」だけで、建物が空いている間に資源不足で弾かれた分は残る
+    人口の上限(家が足りない)で止まっていた時間は分からないので、生産していた扱い。そのため空き時間は少なめ(下限)、作った数は多め(上限)に出る。
+    町の中心は、町の人か町の中心の研究を最初に予約した時刻から数える(建て終わった時刻は録画に残らない)。
+    最初の町の中心は0秒から。最後に使った後(壊された・人口が埋まったなど)は空き時間に数えない。
+
+    戻り値: {"f": [各町の中心を最初に使った時刻], "i": [[空き始め, 空き終わり], ...](TC_IDLE_END 秒まで),
+             "units": [(作り始めた時刻, ユニット)], "reach": {時代: 到達した時刻}, "rejected": 弾いた予約の数(町の人・軍), "unstarted": 作り始められなかった軍などの数}
     """
-    cmds = sorted(P.get("tc_cmds") or [], key=lambda c: c[0])
+    cmds = sorted(P.get("prod_cmds") or [], key=lambda c: c[0])
     if not cmds:
         return None
-    tcs = {}  # 建物ID -> {first, queue(まだ始まっていないもの), busy_until(作っている最中のものが終わる時刻), done, idle, last}
+    # 町の中心かどうか(町の人か町の中心の研究を予約した建物)
+    tc_ids = set()
+    for t, kind, target, arg in cmds:
+        if kind == "unit" and arg[0] == "Villager":
+            tc_ids.update(target)
+        elif kind == "research" and target is not None and (arg in AGES or arg in TC_TECH_SEC):
+            tc_ids.add(target)
+    # 時代進化の研究を押した時刻(取り消しの解釈で、押し直しがあるかを見るため)
+    age_click_times = {}
+    for t, kind, target, arg in cmds:
+        if kind == "research" and arg in AGES:
+            age_click_times.setdefault(arg, []).append(t)
+    evidence = P.get("age_evidence") or {}
+    blds = {}
+    items = []
+    no_bld_units = []
+    start_food = START_FOOD.get(P["civ"], START_FOOD_DEFAULT)
+    start_villagers = 0
 
-    def tc(oid, t):
-        if oid not in tcs:
-            first = 0 if not tcs and t < 120 else t
-            tcs[oid] = dict(first=first, queue=[], busy_until=first, done=[], idle=[], last=t)
-        return tcs[oid]
+    def bld(oid, t):
+        if oid not in blds:
+            is_tc = oid in tc_ids
+            first = 0 if is_tc and not any(b["tc"] for b in blds.values()) and t < 120 else t
+            blds[oid] = dict(tc=is_tc, first=first, queue=[], busy_until=first, current=None, idle=[], last=t)
+        return blds[oid]
 
-    def duration(item, start):
-        kind, name = item
-        if kind == "research" and name in AGES:
-            age = AGES[name]
-            return AGE_RESEARCH_SEC[age] / AGE_SPEED.get(P["civ"], {}).get(age, 1)
-        return (VILLAGER_SEC if kind == "unit" else TC_TECH_SEC[name]) / tc_speed(P, start)
-
-    def advance(s, t):
+    def advance(b, t):
         """t まで生産を進める(待ち行列の先頭から、前のものが終わり次第始める)。終わると queue は空か busy_until > t"""
-        while s["queue"] and s["busy_until"] <= t:
-            item = s["queue"].pop(0)
-            start = s["busy_until"]
-            s["busy_until"] = start + duration(item, start)
-            s["done"].append(item)
+        while b["queue"] and b["busy_until"] <= t:
+            item = b["queue"].pop(0)
+            item["start"] = b["busy_until"]
+            item["end"] = item["start"] + item_duration(P, item, item["start"])
+            item["state"] = "done"
+            b["busy_until"] = item["end"]
+            b["current"] = item
 
-    def push(s, t, item):
-        advance(s, t)
-        if not s["queue"] and s["busy_until"] < t:
-            if t - s["busy_until"] >= 1:
-                s["idle"].append([s["busy_until"], t])
-            s["busy_until"] = t
-        s["queue"].append(item)
-        s["last"] = t
-        advance(s, t)
+    def producing(b, t):
+        return b["current"] if b["current"] is not None and b["busy_until"] > t else None
 
-    queued_techs = set()
+    def push(b, t, item):
+        advance(b, t)
+        if not b["queue"] and b["busy_until"] < t:
+            if t - b["busy_until"] >= 1:
+                b["idle"].append([b["busy_until"], t])
+            b["busy_until"] = t
+        b["queue"].append(item)
+        item["bld"] = b
+        b["last"] = t
+        advance(b, t)
+
+    def cancel(b, t, item, state):
+        """待ち行列か作っている最中の1件を外す"""
+        if item is producing(b, t):
+            b["current"] = None
+            b["busy_until"] = t
+            advance(b, t)
+        elif item in b["queue"]:
+            b["queue"].remove(item)
+        item["state"] = state
+
+    def valid_evidence(age, click):
+        """ボタンを押した時刻 + 研究時間 より後の、その時代でしかできない最初の行動の時刻(なければ None)。
+        それより前の手がかりは、実際にはできなかった命令か文明ボーナスなので使わない(2026/10 再レビューで指摘)"""
+        earliest = click + age_research_sec(P, age) - 1
+        later = [e for e in evidence.get(age, []) if e >= earliest]
+        return min(later) if later else None
+
+    def fit_age_deadline(b, t, item):
+        """時代進化の研究が、その時代でしかできない行動に間に合うよう、前に並ぶ町の人の予約を新しいものから弾く"""
+        age = AGES[item["name"]]
+        ev = valid_evidence(age, t)
+        if ev is None:
+            return
+        deadline = ev - age_research_sec(P, age)
+        advance(b, t)
+        while True:
+            ahead = (b["busy_until"] if producing(b, t) else t) + sum(item_duration(P, q, t) for q in b["queue"])
+            pending = [q for q in b["queue"] if q["kind"] == "unit" and q["name"] == "Villager"]
+            if ahead <= deadline + 1 or not pending:
+                break
+            cancel(b, t, pending[-1], "rejected")
+
+    queued = {}  # 研究名 -> 予約中の項目(待ち行列か作っている最中)
     for t, kind, target, arg in cmds:
         if t > end:
             break
         if kind == "unit":
+            name, amount = arg
             ids = [i for i in target if i is not None]
-            for _ in range(arg if ids else 0):
-                # 複数の町の中心を選んで予約すると、待ち行列の短いところから振り分けられる
+            for _ in range(amount):
+                item = dict(kind="unit", name=name, t=t, start=None, end=None, state="queued")
+                items.append(item)
+                if name == "Villager" and t < START_WINDOW:
+                    # 開始直後は、開始時の食料で払える分まで
+                    if (start_villagers + 1) * 50 > start_food:
+                        item["state"] = "rejected"
+                        continue
+                    start_villagers += 1
+                if not ids:
+                    no_bld_units.append(item)
+                    continue
+                # 複数の建物を選んで予約すると、待ち行列の短いところから振り分けられる
                 for i in ids:
-                    advance(tc(i, t), t)
-                s = min((tc(i, t) for i in ids), key=lambda s: (len(s["queue"]), s["busy_until"]))
-                push(s, t, ("unit", "Villager"))
+                    advance(bld(i, t), t)
+                b = min((bld(i, t) for i in ids), key=lambda b: (len(b["queue"]), b["busy_until"]))
+                # 1つの建物の待ち行列は QUEUE_MAX 件まで(作っている最中の1件を含む)。それを超えた予約は入らない
+                if len(b["queue"]) + (1 if producing(b, t) else 0) >= QUEUE_MAX:
+                    item["state"] = "rejected"
+                    continue
+                push(b, t, item)
         elif kind == "research":
-            # 同じ研究が二重に記録されていることがある(研究は一度しか予約できない)
-            if target is None or arg in queued_techs:
+            if target is None:
                 continue
-            queued_techs.add(arg)
-            push(tc(target, t), t, ("research", arg))
-        elif kind == "unqueue" and target in tcs:
-            s = tcs[target]
-            advance(s, t)
-            producing = s["busy_until"] > t and s["done"]
-            full = ([s["done"][-1]] if producing else []) + s["queue"]
-            if not full:
-                continue
-            # 画面の待ち行列は、同じものが続く分を1つの枠にまとめて表示する(枠0 が作っている最中のもの)。
-            # 枠をクリックすると、その枠の最後の1つが外れる。作っている最中の1つだけなら作るのをやめる
-            groups = []
-            for i, item in enumerate(full):
-                if groups and full[groups[-1][-1]] == item:
-                    groups[-1].append(i)
+            # 研究は一度予約するとボタンが消えるので、同じ研究を時間をあけて押し直していれば、前の予約は通っていない。
+            # 前の予約も一度は待ち行列に入れておき(その研究を取り消した操作が正しく当たるように)、押し直した時点で外す(2026/10 再レビューで指摘)
+            prev = queued.get(arg)
+            if prev is not None and prev["state"] in ("queued", "done"):
+                if t - prev["t"] < CLICK_BURST:
+                    continue  # 連打(1回の操作)
+                if prev["state"] == "done" and prev["end"] <= t:
+                    # 研究し終わった後に押し直している = 研究していた建物が壊れたなどで、研究が失われていた
+                    prev["state"] = "lost"
                 else:
-                    groups.append([i])
-            idx = groups[min(arg, len(groups) - 1)][-1]
-            if producing and idx == 0:
-                removed = s["done"].pop()
-                s["busy_until"] = t
-                advance(s, t)
-            else:
-                removed = s["queue"].pop(idx - (1 if producing else 0))
-            if removed[0] == "research":
-                queued_techs.discard(removed[1])
+                    # 待ち行列か研究中に押し直している = 前の予約は弾かれたか取り消した
+                    cancel(prev["bld"], t, prev, "rejected")
+            item = dict(kind="research", name=arg, t=t, start=None, end=None, state="queued")
+            items.append(item)
+            queued[arg] = item
+            b = bld(target, t)
+            if arg in AGES and b["tc"]:
+                fit_age_deadline(b, t, item)
+            # 待ち行列が満杯(QUEUE_MAX)なら研究は入らないはずなので、再現の待ち行列が満杯なのは、前に並ぶ予約の一部が
+            # 資源不足で弾かれていたため。前に並ぶユニットの予約を新しいものから弾いて空きを作る(2026/10 4回目のレビューで指摘)
+            advance(b, t)
+            while len(b["queue"]) + (1 if producing(b, t) else 0) >= QUEUE_MAX:
+                pending = [q for q in b["queue"] if q["kind"] == "unit"]
+                if not pending:
+                    break
+                cancel(b, t, pending[-1], "rejected")
+            push(b, t, item)
+        elif kind == "unqueue":
+            # object_ids は建物ID×256(2024/2 以前の録画は建物IDそのもの)
+            oid = target >> 8 if (target >> 8) in blds else target if target in blds else None
+            if oid is None:
+                continue
+            b = blds[oid]
+            advance(b, t)
+            cur = producing(b, t)
+            # 画面の待ち行列: 作っている最中の1つが枠0、続いて同じものが続く分を1つの枠にまとめる。
+            # 枠をクリックすると、その枠の最後の1つが外れる(2026/10 再レビューで、作っている最中を独立した枠にすると合う例が増えた)
+            groups = [[cur]] if cur else []
+            for item in b["queue"]:
+                if groups and (not cur or len(groups) > 1) and (groups[-1][-1]["kind"], groups[-1][-1]["name"]) == (item["kind"], item["name"]):
+                    groups[-1].append(item)
+                else:
+                    groups.append([item])
+            if not groups:
+                continue
+            target_item = groups[min(arg, len(groups) - 1)][-1]
+            # 時代進化の研究を外す解釈になっても、後にその時代の手がかりがあり押し直しもなければ、実際は町の人を外している
+            if target_item["kind"] == "research" and target_item["name"] in AGES:
+                re_click = any(c > t for c in age_click_times.get(target_item["name"], []))
+                if not re_click and valid_evidence(AGES[target_item["name"]], target_item["t"]) is not None:
+                    vills = [q for q in b["queue"] if q["kind"] == "unit"] or ([cur] if cur and cur["kind"] == "unit" else [])
+                    if not vills:
+                        continue
+                    target_item = vills[-1]
+            cancel(b, t, target_item, "cancelled")
+    # 試合の終わりまで進める(最後の命令の後に始まる研究・生産も入れる。2026/10 再レビューで指摘)
+    for b in blds.values():
+        advance(b, end)
     out_idle = []
-    for s in tcs.values():
-        advance(s, s["last"])
-        stop = min(end, s["last"], TC_IDLE_END)
-        out_idle += [[round(a), round(min(b, stop))] for a, b in s["idle"] if a < stop and min(b, stop) - a >= 1]
-    return {"f": sorted(round(s["first"]) for s in tcs.values()), "i": sorted(out_idle)}
+    for b in blds.values():
+        if not b["tc"]:
+            continue
+        stop = min(end, b["last"], TC_IDLE_END)
+        out_idle += [[round(a), round(min(c, stop))] for a, c in b["idle"] if a < stop and min(c, stop) - a >= 1]
+    reach = {}
+    for item in items:
+        if item["kind"] == "research" and item["name"] in AGES and item["state"] == "done" and item["end"] <= end:
+            age = AGES[item["name"]]
+            ev = valid_evidence(age, item["t"])
+            # その時代でしかできない行動の時刻には到達している(再現がずれた場合の上限)
+            reach[age] = round(min(item["end"], ev) if ev is not None else item["end"])
+    started = [(round(i["start"]), i["name"]) for i in items if i["kind"] == "unit" and i["state"] == "done" and i["start"] <= end]
+    started += [(i["t"], i["name"]) for i in no_bld_units]
+    return {
+        "f": sorted(round(b["first"]) for b in blds.values() if b["tc"]),
+        "i": sorted(out_idle),
+        "units": sorted(started),
+        "reach": reach,
+        "rejected": sum(1 for i in items if i["state"] == "rejected" and i["kind"] == "unit"),
+        "unstarted": sum(1 for i in items if i["kind"] == "unit" and i["name"] != "Villager" and i["state"] == "queued"),
+    }
+
+
+def apply_production(P, end):
+    """建物ごとの待ち行列の再現の結果を記録に反映する。
+
+    ユニットの数(units)と途中経過・時代ごとの軍(events)を、弾いた・取り消した・作り始められなかった予約を除き、作り始めた時刻で数え直す。
+    時代に到達した時刻は、研究が実際に始まった時刻 + 研究時間にする(reached_ages)
+    """
+    res = simulate_production(P, end)
+    if not res:
+        return
+    if res["f"]:
+        P["tc_result"] = {"f": res["f"], "i": res["i"]}
+    P["reach"] = res["reach"]
+    P["prod_rejected"] = res["rejected"]
+    P["prod_unstarted"] = res["unstarted"]
+    P["events"] = [e for e in P["events"] if e[1] != "unit"] + [(t, "unit", name, 1) for t, name in res["units"]]
+    P["units"] = Counter(name for _, name in res["units"])
 
 
 def to_record(path, info, ps, winner_source):
@@ -697,6 +938,10 @@ def to_record(path, info, ps, winner_source):
         if P["raw_name"]:
             P["name"] = NAME_MAP.get(P["raw_name"], P["raw_name"])
     assign_roles(ps, info.get("size"))
+    # 建物ごとの待ち行列の再現(人間だけ。AI は操作がほとんど録画に残らない)。ユニットの数と時代に到達した時刻を直すので、ほかの集計より先に行う
+    for P in ps.values():
+        if P["raw_name"] and P.get("prod_cmds"):
+            apply_production(P, min(duration, P["resign"]) if P["resign"] is not None else duration)
     ordered = [ps[n] for n in sorted(ps)]
     rec = dict(
         id=rec_id,
