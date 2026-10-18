@@ -224,7 +224,7 @@ def parse_de(path):
             raw_name=p.name, civ=p.civilization, team=None, winner=bool(p.winner), actions=0, acts=[],
             ages={}, units=Counter(), buildings=Counter(), techs={}, resign=None,
             pos=(p.position.x, p.position.y) if p.position else None, events=[], prod_cmds=[], age_evidence={},
-            age_clicks={}, tech_clicks={},
+            age_clicks={}, tech_clicks={}, targets=[],
             # 手元の資源(木・食料・金・石の合計)。ゲームが同期のために録画に書いている値(約6〜14秒ごと)
             stock=[(r.timestamp.total_seconds(), r.total_resources) for r in (p.timeseries or [])],
         )
@@ -242,6 +242,8 @@ def parse_de(path):
             P["actions"] += 1
             P["acts"].append((t, ACTION_CATEGORY.get(a.type.name, OTHER_CATEGORY)))
         kind = a.type.name
+        if kind in TARGET_ACTIONS and a.position is not None:
+            P["targets"].append((t, a.position.x, a.position.y))
         if kind == "RESEARCH":
             tech = pay.get("technology")
             # 研究を押した時刻は全部とっておき、最後にまとめて決める(last_burst)
@@ -451,6 +453,10 @@ ACTION_CATEGORY = {name: ACTION_CATEGORIES.index(cat) for cat, names in {
     "research": ["RESEARCH"],
     "gather": ["GATHER_POINT", "DE_MULTI_GATHERPOINT"],
 }.items() for name in names}
+# 攻め先(tg)を数える命令(移動・指示)。命令には目標の座標が入っている(2026/10 確認)
+TARGET_ACTIONS = {"MOVE", "ORDER", "PATROL", "ATTACK_GROUND", "DE_ATTACK_MOVE"}
+TARGET_RADIUS = 0.15  # 開始位置からこの距離(マップの一辺に対する割合。200マスで30マス)以内を「その人の陣地」とみなす
+TARGET_CASTLE_SEC = 600  # 城主の時代は到達してからこの秒数までを数える(城主の時代の最初の攻め)
 EAPM_WINDOW = 5  # 時間ごとの eAPM は5分ごと(分)
 EAPM_WINDOW_END = 60
 
@@ -577,6 +583,35 @@ def reached_ages(P, end):
     """
     src = P["reach"] if P.get("reach") is not None else clicked_reach(P)
     return {age: at for age, at in src.items() if at <= end}
+
+
+def target_fields(P, ps, size, end):
+    """領主の時代・城主の時代の最初の10分に、移動・指示の命令をほかの誰の陣地へ出したか: {時代: {名前: 命令の数}}。
+
+    命令の目標の座標から一番近い開始位置を探し、それが自分以外で TARGET_RADIUS 以内なら、その人の陣地への命令として数える。
+    相手の後衛の陣地への命令が多ければ「後衛を攻めた(直)」、味方の陣地なら「味方を助けに行った」とみなせる(画面側の replayStrategy)。
+    ユニットが着いたか・何を倒したかは録画に残らないので、攻めた成果は相手の時代進化の遅れなどで見る
+    """
+    if not P.get("targets") or not size or any(Q.get("pos") is None for Q in ps.values()):
+        return None
+    ages = reached_ages(P, end)
+    windows = {}
+    if "feudal" in ages:
+        windows["feudal"] = (ages["feudal"], ages.get("castle", end))
+    if "castle" in ages:
+        windows["castle"] = (ages["castle"], min(end, ages["castle"] + TARGET_CASTLE_SEC))
+    radius = size * TARGET_RADIUS
+    out = {}
+    for age, (lo, hi) in windows.items():
+        c = Counter()
+        for t, x, y in P["targets"]:
+            if not lo <= t < hi:
+                continue
+            Q = min(ps.values(), key=lambda Q: math.hypot(x - Q["pos"][0], y - Q["pos"][1]))
+            if Q is not P and math.hypot(x - Q["pos"][0], y - Q["pos"][1]) <= radius:
+                c[Q["name"]] += 1
+        out[age] = dict(c.most_common())
+    return out
 
 
 def assign_roles(ps, size):
@@ -967,6 +1002,7 @@ def to_record(path, info, ps, winner_source):
                 role=P["role"],
                 at=checkpoints(P, min(duration, P["resign"]) if P["resign"] is not None else duration),
                 pm=per_minute(P, min(duration, P["resign"]) if P["resign"] is not None else duration),
+                **({"tg": tg} if P["raw_name"] and (tg := target_fields(P, ps, info.get("size"), min(duration, P["resign"]) if P["resign"] is not None else duration)) else {}),
             )
             for P in ordered
         },
